@@ -1,7 +1,6 @@
 const admin = require("firebase-admin");
 const { getDatabase } = require("firebase-admin/database");
 const fs = require("fs");
-const path = require("path");
 
 let dbInstance = null;
 let isInitialized = false;
@@ -9,41 +8,64 @@ let isInitialized = false;
 function parseServiceAccount() {
   let account = null;
 
-  // 1. Direct JSON or Base64 string in env (ideal for Render)
-  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-    const raw = process.env.FIREBASE_SERVICE_ACCOUNT.trim();
+  // 1. Check Environment Variable (FIREBASE_SERVICE_ACCOUNT or FIREBASE_CONFIG_BASE64)
+  const envVal = process.env.FIREBASE_SERVICE_ACCOUNT || process.env.FIREBASE_CONFIG_BASE64;
+  
+  if (envVal) {
+    let raw = envVal.trim();
+    
+    // যদি শুরুতে বা শেষে ভুলবশত অতিরিক্ত কোটেশন (" বা ') চলে আসে, তা রিমুভ করা
+    if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
+      raw = raw.slice(1, -1).trim();
+    }
+    if (raw.endsWith('}"')) {
+      raw = raw.slice(0, -1).trim();
+    }
+
     if (raw.startsWith("{")) {
       try {
         account = JSON.parse(raw);
+        console.log("✅ Loaded Firebase credentials from ENV (JSON format)");
       } catch (e) {
-        console.error("Failed to parse FIREBASE_SERVICE_ACCOUNT JSON:", e.message);
+        // যদি আসল newline থাকার কারণে JSON.parse ফেইল করে, তা ঠিক করে আবার চেষ্টা করা
+        try {
+          const fixedRaw = raw.replace(/\r?\n/g, "\\n");
+          account = JSON.parse(fixedRaw);
+          console.log("✅ Loaded Firebase credentials from ENV (Fixed multiline JSON)");
+        } catch (e2) {
+          console.error("❌ Failed to parse FIREBASE_SERVICE_ACCOUNT JSON:", e2.message);
+        }
       }
     } else {
-      // Try base64 decoding
+      // Base64 ডিকোড করার চেষ্টা
       try {
         const decoded = Buffer.from(raw, "base64").toString("utf8");
         account = JSON.parse(decoded);
+        console.log("✅ Loaded Firebase credentials from ENV (Base64 format)");
       } catch (e) {
-        console.error("Failed to decode base64 FIREBASE_SERVICE_ACCOUNT:", e.message);
+        console.error("❌ Failed to decode base64 FIREBASE_SERVICE_ACCOUNT:", e.message);
       }
     }
   }
 
-  // 2. File path in env or default local file
+  // 2. Fallback to Local File (শুধুমাত্র লোকাল পিসির জন্য)
   if (!account) {
     const keyPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH || "./serviceAccountKey.json";
     if (fs.existsSync(keyPath)) {
       try {
         account = JSON.parse(fs.readFileSync(keyPath, "utf8"));
+        console.log(`⚠️ Loaded Firebase credentials from local file: ${keyPath}`);
       } catch (e) {
-        console.error(`Failed to read Firebase service account from ${keyPath}:`, e.message);
+        console.error(`❌ Failed to read Firebase service account from ${keyPath}:`, e.message);
       }
     }
   }
 
-  // CRITICAL: Normalize private_key newlines (prevents "invalid_grant: Invalid JWT Signature" on Render)
+  // 3. CRITICAL: Normalize private_key newlines & accidental quotes
   if (account && typeof account.private_key === "string") {
-    account.private_key = account.private_key.replace(/\\n/g, "\n");
+    account.private_key = account.private_key
+      .replace(/^["']|["']$/g, "") // শুরু বা শেষের ভুল কোটেশন সরানো
+      .replace(/\\n/g, "\n");      // টেক্সট \n কে আসল লাইন ব্রেকে রূপান্তর
   }
 
   return account;
@@ -67,10 +89,15 @@ function initFirebase() {
   }
 
   try {
-    if (!admin.getApps().length) {
+    // কোন Key ID ও Email লোড হচ্ছে তা লগে দেখানো
+    console.log(`🔑 Initializing Firebase with Key ID: ${serviceAccount.private_key_id} (${serviceAccount.client_email})`);
+
+    const apps = admin.apps || (typeof admin.getApps === "function" ? admin.getApps() : []);
+    if (!apps.length) {
+      const certFn = admin.credential && admin.credential.cert ? admin.credential.cert : admin.cert;
       admin.initializeApp({
-        credential: admin.cert(serviceAccount),
-        databaseURL: dbUrl
+        credential: certFn(serviceAccount),
+        databaseURL: dbUrl.trim().replace(/^["']|["']$/g, "")
       });
     }
     dbInstance = getDatabase();
@@ -106,7 +133,6 @@ function saveFirebaseData(data) {
   const db = initFirebase();
   if (!db) return;
 
-  // Debounce writes slightly (200ms) to coalesce rapid sequential updates
   if (syncTimeout) clearTimeout(syncTimeout);
 
   syncTimeout = setTimeout(async () => {
@@ -139,4 +165,3 @@ module.exports = {
   saveFirebaseData,
   listenFirebaseData
 };
-
