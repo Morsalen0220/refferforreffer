@@ -7,12 +7,14 @@ let dbInstance = null;
 let isInitialized = false;
 
 function parseServiceAccount() {
+  let account = null;
+
   // 1. Direct JSON or Base64 string in env (ideal for Render)
   if (process.env.FIREBASE_SERVICE_ACCOUNT) {
     const raw = process.env.FIREBASE_SERVICE_ACCOUNT.trim();
     if (raw.startsWith("{")) {
       try {
-        return JSON.parse(raw);
+        account = JSON.parse(raw);
       } catch (e) {
         console.error("Failed to parse FIREBASE_SERVICE_ACCOUNT JSON:", e.message);
       }
@@ -20,7 +22,7 @@ function parseServiceAccount() {
       // Try base64 decoding
       try {
         const decoded = Buffer.from(raw, "base64").toString("utf8");
-        return JSON.parse(decoded);
+        account = JSON.parse(decoded);
       } catch (e) {
         console.error("Failed to decode base64 FIREBASE_SERVICE_ACCOUNT:", e.message);
       }
@@ -28,16 +30,23 @@ function parseServiceAccount() {
   }
 
   // 2. File path in env or default local file
-  const keyPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH || "./serviceAccountKey.json";
-  if (fs.existsSync(keyPath)) {
-    try {
-      return JSON.parse(fs.readFileSync(keyPath, "utf8"));
-    } catch (e) {
-      console.error(`Failed to read Firebase service account from ${keyPath}:`, e.message);
+  if (!account) {
+    const keyPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH || "./serviceAccountKey.json";
+    if (fs.existsSync(keyPath)) {
+      try {
+        account = JSON.parse(fs.readFileSync(keyPath, "utf8"));
+      } catch (e) {
+        console.error(`Failed to read Firebase service account from ${keyPath}:`, e.message);
+      }
     }
   }
 
-  return null;
+  // CRITICAL: Normalize private_key newlines (prevents "invalid_grant: Invalid JWT Signature" on Render)
+  if (account && typeof account.private_key === "string") {
+    account.private_key = account.private_key.replace(/\\n/g, "\n");
+  }
+
+  return account;
 }
 
 function isFirebaseConfigured() {
