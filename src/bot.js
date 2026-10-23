@@ -52,13 +52,13 @@ registerAdminHandlers(bot);
 registerUserHandlers(bot);
 
 // =====================================================
-// EXPRESS HEALTH-CHECK SERVER & BOT LAUNCH
+// EXPRESS HEALTH-CHECK SERVER (IMMEDIATE PORT BINDING FOR RENDER)
 // =====================================================
 const app = express();
 app.use(express.json());
 
 app.get("/", (req, res) => {
-  res.status(200).send("USDT Referral & Earning Telegram Bot is running!");
+  res.status(200).send("USDT Referral & Earning Telegram Bot is running successfully!");
 });
 
 app.get("/health", (req, res) => {
@@ -68,8 +68,20 @@ app.get("/health", (req, res) => {
 const PORT = Number(process.env.PORT) || 3000;
 const WEBHOOK_URL = process.env.WEBHOOK_URL || process.env.RENDER_EXTERNAL_URL;
 
-let server;
 let isShuttingDown = false;
+
+// Bind HTTP server immediately so Render detects open port in <1 second
+const server = app.listen(PORT, "0.0.0.0", () => {
+  console.log(`🌐 HTTP server listening on 0.0.0.0:${PORT} (Render Health Check Ready)`);
+});
+
+server.on("error", (err) => {
+  if (err.code === "EADDRINUSE") {
+    console.log(`Port ${PORT} in use; skipping extra HTTP listener.`);
+  } else {
+    console.error("HTTP server error:", err);
+  }
+});
 
 async function startApp() {
   // 1. Load Firebase / Local DB snapshot
@@ -105,29 +117,13 @@ async function startApp() {
     const cleanUrl = WEBHOOK_URL.replace(/\/+$/, "");
     const secretPath = `/webhook/${bot.secretPathComponent ? bot.secretPathComponent() : "telegraf"}`;
     app.use(bot.webhookCallback(secretPath));
-
-    server = app.listen(PORT, "0.0.0.0", async () => {
-      console.log(`HTTP server listening on 0.0.0.0:${PORT}`);
-      try {
-        await bot.telegram.setWebhook(`${cleanUrl}${secretPath}`);
-        console.log(`Telegram webhook registered at: ${cleanUrl}${secretPath}`);
-      } catch (err) {
-        console.error("Failed to register Telegram webhook:", err.message);
-      }
-    });
+    try {
+      await bot.telegram.setWebhook(`${cleanUrl}${secretPath}`);
+      console.log(`Telegram webhook registered at: ${cleanUrl}${secretPath}`);
+    } catch (err) {
+      console.error("Failed to register Telegram webhook:", err.message);
+    }
   } else {
-    server = app.listen(PORT, "0.0.0.0", () => {
-      console.log(`HTTP server listening on 0.0.0.0:${PORT}`);
-    });
-
-    server.on("error", (err) => {
-      if (err.code === "EADDRINUSE") {
-        console.log(`Port ${PORT} in use; skipping extra HTTP listener.`);
-      } else {
-        console.error("HTTP server error:", err);
-      }
-    });
-
     const launchBot = () => {
       if (isShuttingDown) return;
       bot.launch({
