@@ -1,11 +1,16 @@
 const { Markup } = require("telegraf");
-const { getAllSettings } = require("./store");
+const { getAllSettings, getAllProducts, getUnitPrice } = require("./store");
 const { getRandomCustomerName } = require("./names");
 const { getRealCryptoTransactionProof } = require("./realTransactions");
 const { money, escapeHtml, getBotUsername } = require("./helpers");
 
 let botInstance = null;
 let isBroadcasterStarted = false;
+
+// Rolling 20-minute window tracker to strictly cap auto-posts at maximum 3 per 20 minutes
+const TWENTY_MINUTES_MS = 20 * 60 * 1000;
+const MAX_POSTS_PER_20_MINS = 3;
+let autoPostTimestamps = [];
 
 function setBroadcasterBot(bot) {
   botInstance = bot;
@@ -37,207 +42,150 @@ async function sendToGroupOnly(msg, keyboard) {
   }
 }
 
-// 1. Realtime Deposit Notice (Always 1.00 USDT & Full clickable TxID)
-async function sendGroupDepositNotice(customerName, amount = 1.00, methodLabel = null) {
-  const txProof = getRealCryptoTransactionProof();
+// 1. Realtime Wallet Deposit Notice (Matches exact live product price)
+async function sendGroupDepositNotice(customerName, amount = 45.00, methodLabel = null, targetProductName = null) {
+  const settings = getAllSettings();
+  const txProof = getRealCryptoTransactionProof(settings.binance_pay_enabled !== false);
   const label = methodLabel || txProof.methodLabel;
   const botUsername = await getBotUsername(botInstance);
+  const timeStr = new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+
+  const productLine = targetProductName
+    ? `📦 <b>For Product:</b> <b>${escapeHtml(targetProductName)}</b>\n`
+    : "";
 
   const msg =
     `<blockquote>💰 <b>WALLET DEPOSIT CONFIRMED</b>\n` +
-    `━━━━━━━━━━━━━━━━━━\n` +
-    `👤 <b>Customer:</b> <b>${escapeHtml(customerName)}</b>\n` +
-    `💵 <b>Amount:</b> <b>+1.00 USDT</b>\n` +
-    `🌐 <b>Method:</b> ${txProof.gatewayIcon} <b>${label}</b>\n` +
-    `🔗 <b>TxID:</b> <a href="${txProof.txUrl}">${txProof.txId}</a>\n` +
-    `✅ <b>Status:</b> <b>Success (Credited)</b>\n` +
-    `━━━━━━━━━━━━━━━━━━\n` +
-    `⚡️ <i>Deposit verified &amp; credited to wallet balance!</i></blockquote>`;
-
-  const keyboard = Markup.inlineKeyboard([[Markup.button.url("🚀 Start Earning Now", `https://t.me/${botUsername}`)]]);
-  return sendToGroupOnly(msg, keyboard);
-}
-
-let withdrawalHistory = [];
-
-// 2. Realtime Withdrawal Notice (Full clickable TxID)
-async function sendGroupWithdrawalNotice(customerName, amount = 7.50, methodLabel = null) {
-  const txProof = getRealCryptoTransactionProof();
-  const label = methodLabel || txProof.methodLabel;
-  const botUsername = await getBotUsername(botInstance);
-  const timeStr = new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
-
-  const msg =
-    `<blockquote>💸 <b>WITHDRAWAL PROCESSED &amp; PAID</b>\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
-    `👤 <b>Customer:</b> <b>${escapeHtml(customerName)}</b>\n` +
-    `💵 <b>Amount Paid:</b> <b>${money(amount)}</b>\n` +
+    `👤 <b>Buyer:</b> <b>${escapeHtml(customerName)}</b>\n` +
+    productLine +
+    `💵 <b>Amount Credited:</b> <b>+${money(amount)}</b>\n` +
     `🌐 <b>Method:</b> ${txProof.gatewayIcon} <b>${label}</b>\n` +
     `🔗 <b>TxID:</b> <a href="${txProof.txUrl}">${txProof.txId}</a>\n` +
     `🕒 <b>Time:</b> <code>${timeStr}</code>\n` +
-    `✅ <b>Status:</b> <b>Confirmed &amp; Dispatched</b>\n` +
+    `✅ <b>Status:</b> <b>Instant Wallet Credit</b>\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
-    `🚀 <i>Earn $2.50 for every referral! Instant payouts at 3 invites.</i></blockquote>`;
+    `⚡️ <i>Fund your wallet &amp; buy AI / Cloud accounts with instant delivery!</i></blockquote>`;
 
-  const keyboard = Markup.inlineKeyboard([[Markup.button.url("🚀 Start Earning Now", `https://t.me/${botUsername}`)]]);
-  const res = await sendToGroupOnly(msg, keyboard);
-  if (res.success) {
-    withdrawalHistory.push(Date.now());
-  }
-  return res;
+  const keyboard = Markup.inlineKeyboard([[Markup.button.url("🛍️ Open Cloud & AI Store", `https://t.me/${botUsername}`)]]);
+  return sendToGroupOnly(msg, keyboard);
 }
 
-// 3. Realtime Milestone Notice (e.g. 3, 6, 9 referrals reached)
-async function sendGroupMilestoneNotice(customerName, referralsCount = 3, rewardAmount = 7.50) {
+// 2. Realtime Product Order Completed Notice (Uses exact product price & bulk tiers + clickable TxID)
+async function sendGroupOrderNotice(customerName, productName = "Claude Max 20x (Finished Account)", quantity = 1, totalAmount = 45.00, unitPrice = null) {
+  const settings = getAllSettings();
+  const txProof = getRealCryptoTransactionProof(settings.binance_pay_enabled !== false);
+  const botUsername = await getBotUsername(botInstance);
+  const timeStr = new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+  const calcUnit = unitPrice !== null ? Number(unitPrice) : Number((Number(totalAmount) / Math.max(1, quantity)).toFixed(2));
+
+  const msg =
+    `<blockquote>🛍️ <b>NEW ORDER DELIVERED</b>\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `👤 <b>Buyer:</b> <b>${escapeHtml(customerName)}</b>\n` +
+    `📦 <b>Product:</b> <b>${escapeHtml(productName)}</b>\n` +
+    `🏷️ <b>Unit Price:</b> <b>${money(calcUnit)}</b>${quantity >= 5 ? " <i>(Bulk Rate)</i>" : ""}\n` +
+    `🔢 <b>Quantity:</b> <b>${quantity}x Unit(s)</b>\n` +
+    `💵 <b>Total Paid:</b> <b>${money(totalAmount)}</b>\n` +
+    `🌐 <b>Payment:</b> ${txProof.gatewayIcon} <b>${txProof.methodLabel}</b>\n` +
+    `🔗 <b>TxID:</b> <a href="${txProof.txUrl}">${txProof.txId}</a>\n` +
+    `🕒 <b>Time:</b> <code>${timeStr}</code>\n` +
+    `✅ <b>Delivery:</b> <b>Dispatched Instantly ⚡️</b>\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `🚀 <i>Claude Max 20x • ChatGPT Pro • GCP $300 • Azure PAYG • AWS 5v in stock!</i></blockquote>`;
+
+  const keyboard = Markup.inlineKeyboard([[Markup.button.url("🛒 Buy Instantly in Bot", `https://t.me/${botUsername}`)]]);
+  return sendToGroupOnly(msg, keyboard);
+}
+
+// 3. Stock Restock Notice (Uses exact product price & bulk tier price)
+async function sendGroupRestockNotice(productName = "Google Cloud GCP $300 (USA Region)", addedUnits = 25, unitPrice = 15.00, bulkPrice = null) {
+  const botUsername = await getBotUsername(botInstance);
+  const timeStr = new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+  const bulkLine = bulkPrice && bulkPrice < unitPrice
+    ? `📦 <b>Bulk Price (5+):</b> <b>${money(bulkPrice)} / each</b>\n`
+    : "";
+
+  const msg =
+    `<blockquote>🔥 <b>FRESH BATCH RESTOCKED!</b>\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `📦 <b>Product:</b> <b>${escapeHtml(productName)}</b>\n` +
+    `➕ <b>Added Stock:</b> <b>+${addedUnits} Fresh Units</b>\n` +
+    `💵 <b>Unit Price:</b> <b>${money(unitPrice)}</b>\n` +
+    bulkLine +
+    `🕒 <b>Time:</b> <code>${timeStr}</code>\n` +
+    `⚡️ <b>Status:</b> <b>Verified &amp; Ready for Instant Delivery</b>\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `👉 <i>Tap below to grab yours before stock runs out!</i></blockquote>`;
+
+  const keyboard = Markup.inlineKeyboard([[Markup.button.url("🛍️ Order Now", `https://t.me/${botUsername}`)]]);
+  return sendToGroupOnly(msg, keyboard);
+}
+
+// 4. Free 30-Referral ChatGPT Shared Account (1 Month) Reward Notice
+async function sendGroupFreeRewardNotice(userName = "Verified Member", rewardTitle = "ChatGPT Shared Account (1 Month)", refCount = 30) {
   const botUsername = await getBotUsername(botInstance);
   const timeStr = new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
 
   const msg =
-    `<blockquote>🎉 <b>REFERRAL MILESTONE COMPLETED</b>\n` +
+    `<blockquote>🎁 <b>FREE REFERRAL REWARD CLAIMED!</b>\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
-    `👤 <b>Member:</b> <b>${escapeHtml(customerName)}</b>\n` +
-    `👥 <b>Total Referrals:</b> <b>${referralsCount} Members Joined</b>\n` +
-    `💰 <b>Total Earned:</b> <b>${money(rewardAmount)} Added to Wallet</b>\n` +
+    `👤 <b>Winner:</b> <b>${escapeHtml(userName)}</b>\n` +
+    `🏆 <b>Free Reward:</b> <b>1x ${escapeHtml(rewardTitle)}</b>\n` +
+    `👥 <b>Milestone:</b> <b>${refCount} Referrals Completed!</b>\n` +
+    `💵 <b>Cost:</b> <b>$0.00 USDT (100% FREE 🎁)</b>\n` +
     `🕒 <b>Time:</b> <code>${timeStr}</code>\n` +
-    `⚡️ <b>Status:</b> <b>Ready for Immediate Payout</b>\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
-    `👉 <i>Invite 3 friends and unlock immediate USDT payouts!</i></blockquote>`;
+    `🔥 <i>Invite ${refCount} friends to the bot &amp; claim your FREE ChatGPT Shared Account (1 Month)!</i></blockquote>`;
 
-  const keyboard = Markup.inlineKeyboard([[Markup.button.url("👥 Get Your Invite Link", `https://t.me/${botUsername}`)]]);
-  return sendToGroupOnly(msg, keyboard);
-}
-
-// 4. Realtime Activation Deposit Notice
-async function sendGroupActivationNotice(customerName, amount = 1.00) {
-  const botUsername = await getBotUsername(botInstance);
-  const timeStr = new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
-
-  const msg =
-    `<blockquote>💎 <b>ACCOUNT VERIFIED &amp; ACTIVATED</b>\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `👤 <b>Member:</b> <b>${escapeHtml(customerName)}</b>\n` +
-    `📥 <b>Deposit Amount:</b> <b>${money(amount)}</b>\n` +
-    `🛡️ <b>Type:</b> <b>1-Time Anti-Bot Verification</b>\n` +
-    `🕒 <b>Time:</b> <code>${timeStr}</code>\n` +
-    `🔓 <b>Withdrawals:</b> <b>Fully Unlocked ✅</b>\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `⚡️ <i>Guaranteed, automated &amp; verified payouts!</i></blockquote>`;
-
-  const keyboard = Markup.inlineKeyboard([[Markup.button.url("⚡️ Start Earning Now", `https://t.me/${botUsername}`)]]);
-  return sendToGroupOnly(msg, keyboard);
-}
-
-// 5. Real Referral Joined Notice in Group (triggers whenever an actual user joins via someone's link)
-async function sendRealReferralNoticeToGroup(refUser, newUser) {
-  const settings = getAllSettings();
-  if (!settings.group_id) return { success: false, error: "No group_id configured" };
-  const botUsername = await getBotUsername(botInstance);
-  const refName = [refUser.first_name, refUser.last_name].filter(Boolean).join(" ") || "Community Member";
-  const newName = [newUser.first_name, newUser.last_name].filter(Boolean).join(" ") || "New Member";
-  const refCount = refUser.referral_count || 1;
-  const req = Number(settings.referrals_required || 3);
-  const rewardAmount = Number(settings.referral_reward_amount || 2.50);
-  const welcomeBonus = Number(settings.welcome_bonus_amount || 2.00);
-
-  // Direct user profile link: if has @username link directly to https://t.me/username, otherwise tg://user?id=ID
-  const refLink = refUser.username ? `https://t.me/${refUser.username.replace(/^@/, "")}` : `tg://user?id=${refUser.id}`;
-  const newLink = newUser.username ? `https://t.me/${newUser.username.replace(/^@/, "")}` : `tg://user?id=${newUser.id}`;
-
-  const msg =
-    `<blockquote>🎉 <b>REAL REFERRAL JOINED!</b>\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `👤 <b>Referrer:</b> <a href="${refLink}"><b>${escapeHtml(refName)}</b></a>\n` +
-    `👥 <b>New Member:</b> <a href="${newLink}"><b>${escapeHtml(newName)}</b></a>\n` +
-    `💵 <b>Referrer Reward:</b> <b>+${money(rewardAmount)} Added</b>\n` +
-    `🎁 <b>Joiner Welcome Bonus:</b> <b>+${money(welcomeBonus)} Credited</b>\n` +
-    `📈 <b>Referrer Progress:</b> <b>${refCount} / ${req} Referrals</b>\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `🚀 <i>Invite your friends and earn $2.50 for every referral! Withdraw at 3 invites.</i></blockquote>`;
-
-  const keyboard = Markup.inlineKeyboard([[Markup.button.url("👥 Get Your Invite Link", `https://t.me/${botUsername}`)]]);
-  return sendToGroupOnly(msg, keyboard);
-}
-
-// 6. Automated Single Referral Join Notice (for group background auto-posting)
-async function sendGroupSingleReferralNotice(referrerName, newMemberName, refCount = 1) {
-  const settings = getAllSettings();
-  const req = Number(settings.referrals_required || 3);
-  const rewardAmount = Number(settings.referral_reward_amount || 2.50);
-  const welcomeBonus = Number(settings.welcome_bonus_amount || 2.00);
-  const botUsername = await getBotUsername(botInstance);
-
-  const msg =
-    `<blockquote>🎉 <b>NEW REFERRAL JOINED!</b>\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `👤 <b>Referrer:</b> <b>${escapeHtml(referrerName)}</b>\n` +
-    `👥 <b>New Member:</b> <b>${escapeHtml(newMemberName)}</b>\n` +
-    `💵 <b>Referrer Reward:</b> <b>+${money(rewardAmount)} Added</b>\n` +
-    `🎁 <b>Joiner Welcome Bonus:</b> <b>+${money(welcomeBonus)} Credited</b>\n` +
-    `📈 <b>Referrer Progress:</b> <b>${refCount} / ${req} Referrals</b>\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `🚀 <i>Invite your friends and earn $2.50 for every referral! Withdraw at 3 invites.</i></blockquote>`;
-
-  const keyboard = Markup.inlineKeyboard([[Markup.button.url("👥 Get Your Invite Link", `https://t.me/${botUsername}`)]]);
+  const keyboard = Markup.inlineKeyboard([[Markup.button.url("🎁 Claim Free ChatGPT (1M)", `https://t.me/${botUsername}`)]]);
   return sendToGroupOnly(msg, keyboard);
 }
 
 // Background scheduler for group auto broadcasts
-// GUARANTEED: Minimum 3 withdrawal posts every 10 minutes (often 4 to 6 times per 10 mins)
+// STRICT LIMIT: Maximum 3 posts per 20 minutes (spaced ~7 to 9.5 minutes apart)
 function scheduleNextGroupBroadcast(isFirstRun = false) {
-  // First run: 15-25 seconds; subsequent runs: 75 to 160 seconds (1m 15s to 2m 40s)
-  // This guarantees 4 to 7 broadcast cycles every 10 minutes.
-  const minMs = isFirstRun ? 15 * 1000 : 75 * 1000;
-  const maxMs = isFirstRun ? 25 * 1000 : 160 * 1000;
+  // First run: 30-45 seconds; subsequent runs: 6m 45s to 9m 30s (405,000ms to 570,000ms)
+  const minMs = isFirstRun ? 30 * 1000 : 405 * 1000;
+  const maxMs = isFirstRun ? 45 * 1000 : 570 * 1000;
   const delayMs = Math.floor(minMs + Math.random() * (maxMs - minMs));
 
   setTimeout(async () => {
     try {
       const settings = getAllSettings();
       if (settings.auto_broadcast_enabled !== false && settings.group_id) {
-        // Purge timestamps older than 10 minutes
-        const tenMinutesAgo = Date.now() - 10 * 60 * 1000;
-        withdrawalHistory = withdrawalHistory.filter((ts) => ts > tenMinutesAgo);
+        const now = Date.now();
+        // Purge timestamps older than 20 minutes
+        autoPostTimestamps = autoPostTimestamps.filter((ts) => now - ts < TWENTY_MINUTES_MS);
 
-        // Count how many withdrawals were posted in the rolling 10-minute window
-        const recentWithdrawals = withdrawalHistory.length;
+        // Enforce strict cap: never exceed 3 posts within any 20-minute window
+        if (autoPostTimestamps.length < MAX_POSTS_PER_20_MINS) {
+          const products = getAllProducts().filter((p) => !p.outOfStock);
+          if (products.length > 0) {
+            const name = getRandomCustomerName();
+            const prod = products[Math.floor(Math.random() * products.length)];
+            const roll = Math.random();
 
-        // "kokhono 2 bar kokhono 1 bar" -> randomly 1 or 2 messages
-        const postCount = Math.random() < 0.40 ? 2 : 1;
+            const qtyOptions = prod.price >= 100 ? [1] : [1, 1, 1, 1, 2, 3, 5];
+            const qty = qtyOptions[Math.floor(Math.random() * qtyOptions.length)];
 
-        for (let i = 0; i < postCount; i++) {
-          if (i > 0) {
-            // Short realistic delay between the two messages (3 to 6 seconds)
-            await new Promise((r) => setTimeout(r, Math.floor(3000 + Math.random() * 3000)));
-          }
+            const exactUnitPrice = getUnitPrice(prod, qty);
+            const exactTotalPrice = Number((exactUnitPrice * qty).toFixed(2));
 
-          const name = getRandomCustomerName();
-
-          // GUARANTEE RULE:
-          // If fewer than 3 withdrawals were sent in the last 10 minutes,
-          // ALWAYS send a withdrawal post immediately to meet the quota!
-          // If 3 or more have already been sent, still send withdrawals 75% of the time!
-          const mustSendWithdrawal = recentWithdrawals < 3;
-          const roll = Math.random();
-
-          if (mustSendWithdrawal || roll < 0.75) {
-            // 1. Withdrawal Processed & Paid (Guaranteed min 3 per 10 mins, typically 4-6)
-            const withdrawAmounts = [7.50, 7.50, 10.00, 12.50, 7.50, 15.00, 7.50, 20.00];
-            const amount = withdrawAmounts[Math.floor(Math.random() * withdrawAmounts.length)];
-            await sendGroupWithdrawalNotice(name, amount);
-          } else if (roll < 0.90) {
-            // 2. Deposit Confirmed (Always 1.00 USDT)
-            await sendGroupDepositNotice(name, 1.00);
-          } else {
-            // 3. Referral Join / Milestone
-            if (Math.random() < 0.70) {
-              const refName = getRandomCustomerName();
-              const newName = getRandomCustomerName();
-              const currentRef = Math.random() < 0.65 ? 1 : 2;
-              await sendGroupSingleReferralNotice(refName, newName, currentRef);
+            let res = { success: false };
+            if (roll < 0.68) {
+              res = await sendGroupOrderNotice(name, prod.name, qty, exactTotalPrice, exactUnitPrice);
+            } else if (roll < 0.90) {
+              res = await sendGroupDepositNotice(name, exactTotalPrice, null, `${prod.name}${qty > 1 ? ` (${qty}x)` : ""}`);
             } else {
-              const refCounts = [3, 3, 6];
-              const ref = refCounts[Math.floor(Math.random() * refCounts.length)];
-              await sendGroupMilestoneNotice(name, ref, ref * 2.50);
+              const batchCounts = [10, 15, 20, 25, 30, 50];
+              const batch = batchCounts[Math.floor(Math.random() * batchCounts.length)];
+              const bulkUnit = getUnitPrice(prod, 5);
+              res = await sendGroupRestockNotice(prod.name, batch, prod.price, bulkUnit);
+            }
+
+            if (res && res.success) {
+              autoPostTimestamps.push(Date.now());
             }
           }
         }
@@ -261,11 +209,8 @@ module.exports = {
   setBroadcasterBot,
   sendToGroupOnly,
   sendGroupDepositNotice,
-  sendGroupWithdrawalNotice,
-  sendGroupMilestoneNotice,
-  sendGroupActivationNotice,
-  sendRealReferralNoticeToGroup,
-  sendGroupSingleReferralNotice,
+  sendGroupOrderNotice,
+  sendGroupRestockNotice,
+  sendGroupFreeRewardNotice,
   startGroupBroadcaster
 };
-

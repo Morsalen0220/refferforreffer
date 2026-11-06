@@ -45,10 +45,10 @@ bot.use((ctx, next) => {
 // =====================================================
 // REGISTER BOT MODULES
 // =====================================================
-// 1. Admin Control Panel Handlers (/admin, approvals, broadcasts, settings)
+// 1. Admin Control Panel Handlers (/admin, products, orders, deposits, broadcasts, settings)
 registerAdminHandlers(bot);
 
-// 2. User Dashboard Handlers (/start, referrals, withdraw, deposit, support)
+// 2. User Store Handlers (/start, buy products, api keys, wallet, orders, support)
 registerUserHandlers(bot);
 
 // =====================================================
@@ -58,7 +58,7 @@ const app = express();
 app.use(express.json());
 
 app.get("/", (req, res) => {
-  res.status(200).send("USDT Referral & Earning Telegram Bot is running successfully!");
+  res.status(200).send("Cloud & AI Resource Store Telegram Bot is running successfully!");
 });
 
 app.get("/health", (req, res) => {
@@ -90,17 +90,20 @@ async function startApp() {
   // 2. Start automated social proof broadcaster for Group
   startGroupBroadcaster(bot);
 
-  // 3. Register official Telegram native Bot Menu Commands (smooth background sync with retry)
+  // 3. Register official Telegram native Bot Menu Commands
   const registerCommandsWithRetry = async (retries = 3) => {
     try {
       await bot.telegram.setMyCommands([
-        { command: "start", description: "🚀 Open Main Dashboard" },
-        { command: "balance", description: "💰 View Wallet Balance & Referral Stats" },
-        { command: "refer", description: "👥 Get Referral Link & Progress" },
-        { command: "withdraw", description: "💳 Request Instant Withdrawal" },
-        { command: "proofs", description: "📊 View Live Payment Proofs" },
-        { command: "faq", description: "❓ Frequently Asked Questions & Rules" },
-        { command: "support", description: "📞 24/7 Official Customer Support" }
+        { command: "start", description: "🚀 Open Store Main Menu" },
+        { command: "buy", description: "🛍️ Browse AI & Cloud Categories" },
+        { command: "refer", description: "🎁 30 Referrals = 1 Free ChatGPT Shared (1M)" },
+        { command: "apikey", description: "🔑 High-Quota Official API Keys" },
+        { command: "cloud", description: "☁️ GCP $300 / Azure PAYG / AWS 5v" },
+        { command: "wallet", description: "👛 View Wallet & Deposit USDT/LTC" },
+        { command: "orders", description: "📦 View My Orders & Recover Codes" },
+        { command: "proofs", description: "📊 Live Order Proofs" },
+        { command: "faq", description: "❓ Store FAQ & Bulk Info" },
+        { command: "support", description: "📞 24/7 Customer Support" }
       ]);
       console.log("✅ Official Telegram Bot Commands menu registered successfully!");
     } catch (err) {
@@ -137,7 +140,7 @@ async function startApp() {
           }
         });
 
-      console.log("🚀 USDT Referral & Earning Telegram Bot started successfully (polling mode).");
+      console.log("🚀 Cloud & AI Resource Store Bot started successfully (polling mode).");
     };
 
     launchBot();

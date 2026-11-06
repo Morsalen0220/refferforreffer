@@ -61,9 +61,64 @@ const REAL_POLYGON_TRANSACTIONS = [
   "0x6cb49f3e4bc392812423bb0d082fc464c194bbd69785834b6bfa6b6f849e7b23"
 ];
 
+const REAL_LTC_TRANSACTIONS = [
+  "e2a669d04d6c88a2bc2e69ce2f2df183a0d1ef5e858429b624570698026f7276",
+  "b285c1b80eb774df949fd29611b4488022d2911191a1c3f1842e963d93192638",
+  "4d8e302a89813f6e49e8a2b2f593260b3f9365c67b6376524906e068d3072c83",
+  "6359f0868171b1d194cbee1af2f16ea598ae8fad666d9b012c8ed2b79a236ec4",
+  "c80b343d2ce2b5d800c2d9e076e4a1f62f26272e3a1f959573672e03b25d27b5"
+];
+
 // Live pools that get updated dynamically from real-time blocks
 let liveBscPool = [...REAL_BSC_TRANSACTIONS];
 let livePolygonPool = [...REAL_POLYGON_TRANSACTIONS];
+let liveLtcPool = [...REAL_LTC_TRANSACTIONS];
+
+function fetchLtcTransactions() {
+  return new Promise((resolve) => {
+    try {
+      const req = https.get("https://api.blockcypher.com/v1/ltc/main", { timeout: 5000 }, (res) => {
+        let body = "";
+        res.on("data", (chunk) => (body += chunk));
+        res.on("end", () => {
+          try {
+            const parsed = JSON.parse(body);
+            if (parsed && parsed.latest_url) {
+              const reqBlock = https.get(parsed.latest_url, { timeout: 5000 }, (resB) => {
+                let bBody = "";
+                resB.on("data", (c) => (bBody += c));
+                resB.on("end", () => {
+                  try {
+                    const blockData = JSON.parse(bBody);
+                    if (Array.isArray(blockData.txids) && blockData.txids.length > 0) {
+                      resolve(blockData.txids.slice(0, 30));
+                    } else {
+                      resolve([]);
+                    }
+                  } catch (e) {
+                    resolve([]);
+                  }
+                });
+              });
+              reqBlock.on("error", () => resolve([]));
+            } else {
+              resolve([]);
+            }
+          } catch (e) {
+            resolve([]);
+          }
+        });
+      });
+      req.on("error", () => resolve([]));
+      req.on("timeout", () => {
+        req.destroy();
+        resolve([]);
+      });
+    } catch (e) {
+      resolve([]);
+    }
+  });
+}
 
 // Fetch fresh real on-chain transactions from BSC public RPC
 function fetchRpcTransactions(rpcUrl) {
@@ -129,6 +184,10 @@ async function refreshRealTransactions() {
     if (polyHashes.length > 5) {
       livePolygonPool = Array.from(new Set([...polyHashes, ...REAL_POLYGON_TRANSACTIONS])).slice(0, 150);
     }
+    const ltcHashes = await fetchLtcTransactions();
+    if (ltcHashes.length > 2) {
+      liveLtcPool = Array.from(new Set([...ltcHashes, ...REAL_LTC_TRANSACTIONS])).slice(0, 100);
+    }
   } catch (e) {
     // Non-fatal, pool has permanent backup hashes
   }
@@ -140,11 +199,12 @@ const refreshTimer = setInterval(refreshRealTransactions, 10 * 60 * 1000);
 if (refreshTimer.unref) refreshTimer.unref();
 
 // Get a 100% verified, live, working transaction proof
-function getRealCryptoTransactionProof() {
+function getRealCryptoTransactionProof(allowBinancePay = true) {
   const rand = Math.random();
-  // 60% BSC (BEP20), 30% Polygon, 10% Binance Pay (points to BSC)
-  const isPolygon = rand >= 0.60 && rand < 0.90;
-  const isBinancePay = rand >= 0.90;
+  // 50% BSC (BEP20), 25% Polygon, 15% Litecoin (LTC), 10% Binance Pay (if enabled)
+  const isPolygon = rand >= 0.50 && rand < 0.75;
+  const isLtc = rand >= 0.75 && (allowBinancePay ? rand < 0.90 : true);
+  const isBinancePay = allowBinancePay && rand >= 0.90;
 
   if (isPolygon) {
     const pool = livePolygonPool.length > 0 ? livePolygonPool : REAL_POLYGON_TRANSACTIONS;
@@ -154,6 +214,15 @@ function getRealCryptoTransactionProof() {
       gatewayIcon: "🟣",
       txId: txHash,
       txUrl: `https://polygonscan.com/tx/${txHash}`
+    };
+  } else if (isLtc) {
+    const pool = liveLtcPool.length > 0 ? liveLtcPool : REAL_LTC_TRANSACTIONS;
+    const txHash = pool[Math.floor(Math.random() * pool.length)];
+    return {
+      methodLabel: "Litecoin (LTC)",
+      gatewayIcon: "⚪️",
+      txId: txHash,
+      txUrl: `https://live.blockcypher.com/ltc/tx/${txHash}/`
     };
   } else if (isBinancePay) {
     const pool = liveBscPool.length > 0 ? liveBscPool : REAL_BSC_TRANSACTIONS;

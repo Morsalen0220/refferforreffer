@@ -6,18 +6,22 @@ const {
   getUser,
   adjustUserBalance,
   adjustUserReferrals,
-  setUserActivated,
   getAllUsers,
+  getAllProducts,
+  getProduct,
+  getUnitPrice,
+  updateProduct,
+  addProductStockItems,
   getDeposit,
   approveDeposit,
   rejectDeposit,
   getPendingDeposits,
   getAllDeposits,
-  getWithdrawal,
-  approveWithdrawal,
-  rejectWithdrawal,
-  getPendingWithdrawals,
-  getAllWithdrawals
+  getOrder,
+  getPendingOrders,
+  getAllOrders,
+  fulfillOrder,
+  refundOrder
 } = require("../store");
 
 const { getRandomCustomerName } = require("../names");
@@ -26,62 +30,63 @@ const {
   escapeHtml,
   adminOnly,
   isAdmin,
-  ADMIN_ID,
   renderUserProfile,
   getBotUsername
 } = require("../helpers");
 
 const {
   sendGroupDepositNotice,
-  sendGroupWithdrawalNotice,
-  sendGroupMilestoneNotice,
-  sendGroupActivationNotice,
-  sendRealReferralNoticeToGroup
+  sendGroupOrderNotice,
+  sendGroupRestockNotice
 } = require("../broadcaster");
 
 async function showAdminDashboard(ctx) {
   const users = getAllUsers();
   const deposits = getAllDeposits();
-  const withdrawals = getAllWithdrawals();
+  const orders = getAllOrders();
+  const products = getAllProducts();
 
   const totalUsers = users.length;
-  const activatedUsers = users.filter((u) => u.is_activated).length;
   const pendingDeps = deposits.filter((d) => d.status === "pending").length;
-  const pendingWths = withdrawals.filter((w) => w.status === "pending").length;
-  const totalPaid = withdrawals.filter((w) => w.status === "approved").reduce((acc, w) => acc + (w.amount || 0), 0);
-  const totalRef = users.reduce((acc, u) => acc + (u.referral_count || 0), 0);
+  const pendingOrds = orders.filter((o) => o.status === "processing").length;
+  const totalOrders = orders.length;
+  const totalRevenue = orders
+    .filter((o) => o.status !== "refunded")
+    .reduce((acc, o) => acc + Number(o.total_price || 0), 0);
+  const inStockProducts = products.filter((p) => !p.outOfStock && (p.stock || 0) > 0).length;
 
   const text =
-    `👑 <b>ADMINISTRATOR CONTROL PANEL</b>\n` +
+    `👑 <b>STORE ADMINISTRATOR PANEL</b>\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
-    `👥 <b>Total Users:</b> <b>${totalUsers}</b>\n` +
-    `⚡️ <b>Activated Users ($1 Paid):</b> <b>${activatedUsers}</b>\n` +
-    `🔗 <b>Total Referrals Made:</b> <b>${totalRef}</b>\n` +
-    `📥 <b>Pending Deposits:</b> <b>${pendingDeps}</b>\n` +
-    `💳 <b>Pending Withdrawals:</b> <b>${pendingWths}</b>\n` +
-    `💰 <b>Total Paid Out:</b> <b>${money(totalPaid)}</b>\n` +
+    `👥 <b>Total Registered Users:</b> <b>${totalUsers}</b>\n` +
+    `📦 <b>Active Products in Stock:</b> <b>${inStockProducts} / ${products.length}</b>\n` +
+    `🛒 <b>Total Orders Placed:</b> <b>${totalOrders}</b>\n` +
+    `⏳ <b>Orders Awaiting Dispatch:</b> <b>${pendingOrds}</b>\n` +
+    `📥 <b>Pending Wallet Deposits:</b> <b>${pendingDeps}</b>\n` +
+    `💰 <b>Total Store Sales:</b> <b>${money(totalRevenue)}</b>\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
     `👇 <i>Select an action below:</i>`;
 
   const kb = Markup.inlineKeyboard([
     [
+      Markup.button.callback(`📦 Products & Stock (${products.length})`, "adm:products"),
+      Markup.button.callback(`🛒 Orders (${pendingOrds} Pending)`, "adm:orders")
+    ],
+    [
       Markup.button.callback(`📥 Pending Deposits (${pendingDeps})`, "adm:deposits"),
-      Markup.button.callback(`💳 Pending Withdrawals (${pendingWths})`, "adm:withdrawals")
+      Markup.button.callback("👥 Buyers & Users", "adm:users")
     ],
     [
-      Markup.button.callback("👥 Users & Referrals", "adm:users"),
-      Markup.button.callback("🔍 Find / Manage User", "adm:find_user")
-    ],
-    [
-      Markup.button.callback("📢 Broadcast (All)", "adm:broadcast"),
+      Markup.button.callback("🔍 Find User", "adm:find_user"),
       Markup.button.callback("📩 Direct Message (User)", "adm:dm_user")
     ],
     [
-      Markup.button.callback("⚙️ Bot Settings", "adm:settings"),
-      Markup.button.callback("🧪 Test Group Broadcast", "adm:test_broadcast")
+      Markup.button.callback("📢 Broadcast (All)", "adm:broadcast"),
+      Markup.button.callback("⚙️ Store Settings", "adm:settings")
     ],
     [
-      Markup.button.callback("🚀 Promo & Share Posts", "adm:promos")
+      Markup.button.callback("🧪 Test Group Broadcast", "adm:test_broadcast"),
+      Markup.button.callback("🚀 Promo", "adm:promos")
     ]
   ]);
 
@@ -97,7 +102,6 @@ async function showAdminDashboard(ctx) {
 }
 
 function registerAdminHandlers(bot) {
-  // Command & Main Admin Menu
   bot.command("admin", async (ctx) => {
     if (!adminOnly(ctx)) return;
     await showAdminDashboard(ctx);
@@ -109,14 +113,250 @@ function registerAdminHandlers(bot) {
     await showAdminDashboard(ctx);
   });
 
-  // 1. Pending Deposits
+  // =====================================================
+  // 1. MANAGE PRODUCTS & STOCK
+  // =====================================================
+  bot.action("adm:products", async (ctx) => {
+    if (!adminOnly(ctx)) return;
+    const products = getAllProducts();
+
+    const buttons = products.map((p) => {
+      const icon = p.outOfStock || (p.stock || 0) <= 0 ? "🔴" : "🟢";
+      return [
+        Markup.button.callback(
+          `${icon} ${p.name.slice(0, 26)} ($${Number(p.price).toFixed(0)} • ${p.stock || 0})`,
+          `adm_prod:${p.id}`
+        )
+      ];
+    });
+    buttons.push([Markup.button.callback("🔙 Back to Dashboard", "adm:menu")]);
+
+    await ctx.answerCbQuery();
+    await ctx.editMessageText(
+      `📦 <b>MANAGE PRODUCTS &amp; INVENTORY (${products.length}):</b>\n` +
+      `<i>Tap any product below to edit price, update stock count, or preload credentials/keys:</i>`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard(buttons)
+      }
+    );
+  });
+
+  bot.action(/^adm_prod:(.+)$/, async (ctx) => {
+    if (!adminOnly(ctx)) return;
+    const p = getProduct(ctx.match[1]);
+    if (!p) return ctx.answerCbQuery("Product not found.", { show_alert: true });
+
+    const inStock = !p.outOfStock && (p.stock || 0) > 0;
+    const text =
+      `📦 <b>PRODUCT MANAGEMENT</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `🏷️ <b>Name:</b> <b>${escapeHtml(p.name)}</b>\n` +
+      `🆔 <b>ID:</b> <code>${p.id}</code>\n` +
+      `📂 <b>Category:</b> <code>${p.category}</code>\n` +
+      `💵 <b>Unit Price:</b> <b>${money(p.price)}</b>\n` +
+      `📊 <b>Stock Count:</b> <b>${p.stock || 0} units</b> (${inStock ? "🟢 In Stock" : "🔴 Out of Stock"})\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `📝 <b>Description:</b>\n${escapeHtml(p.description || "")}`;
+
+    const kb = Markup.inlineKeyboard([
+      [
+        Markup.button.callback("💵 Edit Price", `adm_p_price:${p.id}`),
+        Markup.button.callback("📊 Set Stock Count", `adm_p_stock:${p.id}`)
+      ],
+      [
+        Markup.button.callback("🔑 Add Preloaded Keys/Accounts", `adm_p_keys:${p.id}`),
+        Markup.button.callback(inStock ? "🔴 Mark Out of Stock" : "🟢 Mark In Stock (+25)", `adm_p_toggle:${p.id}`)
+      ],
+      [Markup.button.callback("🔙 Back to Products", "adm:products")]
+    ]);
+
+    await ctx.answerCbQuery();
+    await ctx.editMessageText(text, { parse_mode: "HTML", ...kb });
+  });
+
+  bot.action(/^adm_p_price:(.+)$/, async (ctx) => {
+    if (!adminOnly(ctx)) return;
+    const p = getProduct(ctx.match[1]);
+    if (!p) return ctx.answerCbQuery("Not found");
+    ctx.session.adminAction = { type: "edit_product_price", productId: p.id };
+    await ctx.answerCbQuery();
+    await ctx.reply(
+      `💵 <b>Edit Price for:</b> ${escapeHtml(p.name)}\n` +
+      `Current Price: <b>${money(p.price)}</b>\n\n` +
+      `Send the new price in USDT (e.g. <code>45</code> or <code>15.50</code>):\n\n` +
+      `<i>Type /cancel to cancel.</i>`,
+      { parse_mode: "HTML" }
+    );
+  });
+
+  bot.action(/^adm_p_stock:(.+)$/, async (ctx) => {
+    if (!adminOnly(ctx)) return;
+    const p = getProduct(ctx.match[1]);
+    if (!p) return ctx.answerCbQuery("Not found");
+    ctx.session.adminAction = { type: "edit_product_stock", productId: p.id };
+    await ctx.answerCbQuery();
+    await ctx.reply(
+      `📊 <b>Set Stock Count for:</b> ${escapeHtml(p.name)}\n` +
+      `Current Stock: <b>${p.stock || 0} units</b>\n\n` +
+      `Send the new available stock number (e.g. <code>50</code> or <code>0</code>):\n\n` +
+      `<i>Type /cancel to cancel.</i>`,
+      { parse_mode: "HTML" }
+    );
+  });
+
+  bot.action(/^adm_p_keys:(.+)$/, async (ctx) => {
+    if (!adminOnly(ctx)) return;
+    const p = getProduct(ctx.match[1]);
+    if (!p) return ctx.answerCbQuery("Not found");
+    ctx.session.adminAction = { type: "add_product_keys", productId: p.id };
+    await ctx.answerCbQuery();
+    await ctx.reply(
+      `🔑 <b>Add Preloaded Accounts / Keys for:</b> ${escapeHtml(p.name)}\n\n` +
+      `Send the credentials or API keys below (<b>1 item per line</b>).\n` +
+      `When a buyer orders this product, the bot will automatically dispense these lines instantly!\n\n` +
+      `<i>Type /cancel to cancel.</i>`,
+      { parse_mode: "HTML" }
+    );
+  });
+
+  bot.action(/^adm_p_toggle:(.+)$/, async (ctx) => {
+    if (!adminOnly(ctx)) return;
+    const p = getProduct(ctx.match[1]);
+    if (!p) return ctx.answerCbQuery("Not found");
+
+    const inStock = !p.outOfStock && (p.stock || 0) > 0;
+    const updated = updateProduct(p.id, {
+      stock: inStock ? 0 : 25,
+      outOfStock: inStock
+    });
+    await ctx.answerCbQuery(updated.outOfStock ? "Marked Out of Stock 🔴" : "Marked In Stock (25 units) 🟢");
+    return ctx.editMessageText(
+      `✅ Updated <b>${escapeHtml(updated.name)}</b> stock to <b>${updated.stock}</b>.`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([[Markup.button.callback("🔙 Back to Product", `adm_prod:${p.id}`)]])
+      }
+    );
+  });
+
+  // =====================================================
+  // 2. ORDERS MANAGEMENT & FULFILLMENT
+  // =====================================================
+  bot.action("adm:orders", async (ctx) => {
+    if (!adminOnly(ctx)) return;
+    const pending = getPendingOrders();
+    const all = getAllOrders().slice(-10).reverse();
+    const list = pending.length > 0 ? pending : all;
+
+    if (list.length === 0) {
+      await ctx.answerCbQuery();
+      return ctx.editMessageText("🛒 No orders placed yet.", {
+        ...Markup.inlineKeyboard([[Markup.button.callback("🔙 Back", "adm:menu")]])
+      });
+    }
+
+    const buttons = list.slice(0, 10).map((o) => {
+      const badge = o.status === "delivered" ? "✅" : o.status === "refunded" ? "❌" : "⏳";
+      return [
+        Markup.button.callback(
+          `${badge} ${o.id} • ${o.product_name.slice(0, 18)} ($${Number(o.total_price).toFixed(0)})`,
+          `adm_view_ord:${o.id}`
+        )
+      ];
+    });
+    buttons.push([Markup.button.callback("🔙 Back to Dashboard", "adm:menu")]);
+
+    await ctx.answerCbQuery();
+    await ctx.editMessageText(
+      `🛒 <b>STORE ORDERS (${pending.length} Awaiting Dispatch / ${all.length} Recent):</b>`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard(buttons)
+      }
+    );
+  });
+
+  bot.action(/^adm_view_ord:(.+)$/, async (ctx) => {
+    if (!adminOnly(ctx)) return;
+    const o = getOrder(ctx.match[1]);
+    if (!o) return ctx.answerCbQuery("Order not found.", { show_alert: true });
+
+    const text =
+      `🛒 <b>ORDER DETAILS: <code>${o.id}</code></b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `👤 <b>Buyer ID:</b> <code>${o.user_id}</code> (${escapeHtml(o.user_name || "")})\n` +
+      `📦 <b>Product:</b> <b>${escapeHtml(o.product_name)}</b>\n` +
+      `🔢 <b>Quantity:</b> <b>${o.quantity}x</b>\n` +
+      `💵 <b>Total Paid:</b> <b>${money(o.total_price)}</b>\n` +
+      `📊 <b>Status:</b> <b>${o.status.toUpperCase()}</b>\n` +
+      `🕒 <b>Date:</b> ${new Date(o.created_at).toLocaleString()}`;
+
+    const kb = Markup.inlineKeyboard([
+      [Markup.button.callback("📤 Deliver Credentials / Key", `adm_ord_fulfill:${o.id}`)],
+      [Markup.button.callback("❌ Refund Order to Wallet", `adm_ord_refund:${o.id}`)],
+      [Markup.button.callback("📩 Message Buyer", `adm_user_dm:${o.user_id}`)],
+      [Markup.button.callback("🔙 Back to Orders", "adm:orders")]
+    ]);
+
+    await ctx.answerCbQuery();
+    await ctx.editMessageText(text, { parse_mode: "HTML", ...kb });
+  });
+
+  bot.action(/^adm_ord_fulfill:(.+)$/, async (ctx) => {
+    if (!adminOnly(ctx)) return;
+    const ordId = ctx.match[1];
+    const ord = getOrder(ordId);
+    if (!ord) return ctx.answerCbQuery("Order not found.", { show_alert: true });
+
+    ctx.session.adminAction = { type: "fulfill_order", orderId: ord.id };
+    await ctx.answerCbQuery();
+    await ctx.reply(
+      `📤 <b>Deliver Credentials for Order <code>${ord.id}</code></b>\n` +
+      `Product: <b>${escapeHtml(ord.product_name)} (${ord.quantity}x)</b>\n\n` +
+      `Reply with the account credentials, JSON key, or API key to send directly to the buyer:\n\n` +
+      `<i>Type /cancel to cancel.</i>`,
+      { parse_mode: "HTML" }
+    );
+  });
+
+  bot.action(/^adm_ord_refund:(.+)$/, async (ctx) => {
+    if (!adminOnly(ctx)) return;
+    const ordId = ctx.match[1];
+    try {
+      const { order, user } = refundOrder(ordId, "Order refunded to wallet by Admin");
+      await ctx.answerCbQuery("Order refunded!");
+      await ctx.editMessageText(
+        `✅ <b>Order <code>${order.id}</code> Refunded!</b>\n` +
+        `Credited <b>${money(order.total_price)}</b> back to user <code>${order.user_id}</code>.`,
+        { parse_mode: "HTML" }
+      );
+
+      bot.telegram.sendMessage(
+        order.user_id,
+        `💳 <b>ORDER REFUNDED TO WALLET</b>\n` +
+        `━━━━━━━━━━━━━━━━━━━━\n` +
+        `🆔 <b>Order ID:</b> <code>${order.id}</code>\n` +
+        `📦 <b>Product:</b> ${escapeHtml(order.product_name)}\n` +
+        `💵 <b>Refunded Amount:</b> <b>+${money(order.total_price)}</b>\n` +
+        `👛 <b>New Wallet Balance:</b> <b>${money(user?.wallet_balance || 0)}</b>`,
+        { parse_mode: "HTML" }
+      ).catch(() => {});
+    } catch (err) {
+      await ctx.answerCbQuery(`Error: ${err.message}`, { show_alert: true });
+    }
+  });
+
+  // =====================================================
+  // 3. PENDING DEPOSITS
+  // =====================================================
   bot.action("adm:deposits", async (ctx) => {
     if (!adminOnly(ctx)) return;
     const pending = getPendingDeposits();
 
     if (pending.length === 0) {
       await ctx.answerCbQuery();
-      return ctx.editMessageText("📥 No pending deposits.", {
+      return ctx.editMessageText("📥 No pending wallet deposits.", {
         ...Markup.inlineKeyboard([[Markup.button.callback("🔙 Back", "adm:menu")]])
       });
     }
@@ -127,7 +367,7 @@ function registerAdminHandlers(bot) {
     buttons.push([Markup.button.callback("🔙 Back to Dashboard", "adm:menu")]);
 
     await ctx.answerCbQuery();
-    await ctx.editMessageText(`📥 <b>Pending Deposits (${pending.length}):</b>`, {
+    await ctx.editMessageText(`📥 <b>Pending Wallet Deposits (${pending.length}):</b>`, {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard(buttons)
     });
@@ -148,7 +388,7 @@ function registerAdminHandlers(bot) {
       `🕒 <b>Date:</b> ${new Date(dep.created_at).toLocaleString()}`;
 
     const kb = Markup.inlineKeyboard([
-      [Markup.button.callback("✅ Approve Deposit", `adm_dep_app:${dep.id}`)],
+      [Markup.button.callback(`✅ Approve & Credit ${money(dep.amount)}`, `adm_dep_app:${dep.id}`)],
       [Markup.button.callback("❌ Reject Deposit", `adm_dep_rej:${dep.id}`)],
       [Markup.button.callback("🔙 Back", "adm:deposits")]
     ]);
@@ -163,30 +403,31 @@ function registerAdminHandlers(bot) {
 
     try {
       const { deposit, user } = approveDeposit(depId);
-      await ctx.answerCbQuery("Deposit approved!");
+      await ctx.answerCbQuery("Deposit approved & credited!");
       await ctx.editMessageText(
-        `✅ <b>Deposit <code>${depId}</code> Approved!</b>\nUser: <code>${deposit.user_id}</code>\nAmount: <b>${money(deposit.amount)}</b>\nAccount is now ACTIVATED.`,
+        `✅ <b>Deposit <code>${depId}</code> Approved!</b>\n` +
+        `User: <code>${deposit.user_id}</code>\n` +
+        `Credited: <b>+${money(deposit.amount)}</b>\n` +
+        `New Wallet Balance: <b>${money(user?.wallet_balance || 0)}</b>`,
         { parse_mode: "HTML" }
       );
 
-      // Notify user
       bot.telegram.sendMessage(
         deposit.user_id,
-        `🎉 <b>ACCOUNT ACTIVATED SUCCESSFULLY!</b>\n` +
+        `🎉 <b>WALLET DEPOSIT CONFIRMED!</b>\n` +
         `━━━━━━━━━━━━━━━━━━━━\n` +
-        `Your verification deposit of <b>${money(deposit.amount)}</b> has been verified and confirmed!\n\n` +
-        `🔓 <b>Lifetime automated withdrawals are now FULLY UNLOCKED on your account!</b>\n\n` +
-        `Tap "💳 Withdraw" in the bot to withdraw your referral earnings!`,
+        `💵 <b>Amount Credited:</b> <b>+${money(deposit.amount)}</b>\n` +
+        `👛 <b>Available Balance:</b> <b>${money(user?.wallet_balance || 0)}</b>\n\n` +
+        `👇 <i>Tap below to browse our catalog and place your order:</i>`,
         {
           parse_mode: "HTML",
-          ...Markup.inlineKeyboard([[Markup.button.callback("💳 Withdraw My Funds", "menu_withdraw")]])
+          ...Markup.inlineKeyboard([[Markup.button.callback("🛍️ Browse Store & Buy Now", "menu_store")]])
         }
       ).catch(() => {});
 
-      // Broadcast deposit notice to group
       const settings = getAllSettings();
       if (settings.group_id) {
-        sendGroupDepositNotice(user.first_name || "Community Member", deposit.amount || 1.00).catch(() => {});
+        sendGroupDepositNotice(user?.first_name || "Verified Buyer", deposit.amount).catch(() => {});
       }
     } catch (err) {
       await ctx.answerCbQuery(`Error: ${err.message}`, { show_alert: true });
@@ -201,145 +442,48 @@ function registerAdminHandlers(bot) {
     await ctx.reply(`Send the rejection reason for deposit <code>${depId}</code>:`, { parse_mode: "HTML" });
   });
 
-  // 2. Pending Withdrawals
-  bot.action("adm:withdrawals", async (ctx) => {
-    if (!adminOnly(ctx)) return;
-    const pending = getPendingWithdrawals();
-
-    if (pending.length === 0) {
-      await ctx.answerCbQuery();
-      return ctx.editMessageText("💳 No pending withdrawals.", {
-        ...Markup.inlineKeyboard([[Markup.button.callback("🔙 Back", "adm:menu")]])
-      });
-    }
-
-    const buttons = pending.slice(0, 10).map((w) => [
-      Markup.button.callback(`${w.id} • ${money(w.amount)} (${w.method})`, `adm_view_wth:${w.id}`)
-    ]);
-    buttons.push([Markup.button.callback("🔙 Back to Dashboard", "adm:menu")]);
-
-    await ctx.answerCbQuery();
-    await ctx.editMessageText(`💳 <b>Pending Withdrawals (${pending.length}):</b>`, {
-      parse_mode: "HTML",
-      ...Markup.inlineKeyboard(buttons)
-    });
-  });
-
-  bot.action(/^adm_view_wth:(.+)$/, async (ctx) => {
-    if (!adminOnly(ctx)) return;
-    const w = getWithdrawal(ctx.match[1]);
-    if (!w) return ctx.answerCbQuery("Withdrawal not found.", { show_alert: true });
-
-    const text =
-      `💳 <b>WITHDRAWAL DETAILS: <code>${w.id}</code></b>\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `👤 <b>User ID:</b> <code>${w.user_id}</code>\n` +
-      `💵 <b>Amount:</b> <b>${money(w.amount)}</b>\n` +
-      `🌐 <b>Method:</b> ${w.method}\n` +
-      `📫 <b>Destination:</b> <code>${escapeHtml(w.address)}</code>\n` +
-      `🕒 <b>Date:</b> ${new Date(w.created_at).toLocaleString()}`;
-
-    const kb = Markup.inlineKeyboard([
-      [Markup.button.callback("✅ Approve & Mark Paid", `adm_wth_app:${w.id}`)],
-      [Markup.button.callback("❌ Reject & Refund", `adm_wth_rej:${w.id}`)],
-      [Markup.button.callback("🔙 Back", "adm:withdrawals")]
-    ]);
-
-    await ctx.answerCbQuery();
-    await ctx.editMessageText(text, { parse_mode: "HTML", ...kb });
-  });
-
-  bot.action(/^adm_wth_app:(.+)$/, async (ctx) => {
-    if (!adminOnly(ctx)) return;
-    const withdrawId = ctx.match[1];
-
-    try {
-      const { withdrawal, user } = approveWithdrawal(withdrawId);
-      await ctx.answerCbQuery("Withdrawal approved!");
-      await ctx.editMessageText(
-        `✅ <b>Withdrawal <code>${withdrawId}</code> Approved & Marked as Paid!</b>\n` +
-        `User: <code>${withdrawal.user_id}</code>\n` +
-        `Amount: <b>${money(withdrawal.amount)}</b>\n` +
-        `TxID: <code>${withdrawal.txid}</code>`,
-        { parse_mode: "HTML" }
-      );
-
-      // Notify user
-      const isPolygon = String(withdrawal.method || "").toUpperCase().includes("POLYGON");
-      const explorerUrl = isPolygon
-        ? `https://polygonscan.com/tx/${withdrawal.txid}`
-        : `https://bscscan.com/tx/${withdrawal.txid}`;
-
-      bot.telegram.sendMessage(
-        withdrawal.user_id,
-        `🎉 <b>WITHDRAWAL SUCCESSFUL & PAID!</b> 💸\n` +
-        `━━━━━━━━━━━━━━━━━━━━\n` +
-        `Your withdrawal of <b>${money(withdrawal.amount)}</b> has been sent to your <b>${withdrawal.method}</b>:\n` +
-        `<code>${withdrawal.address}</code>\n\n` +
-        `🔗 <b>TxID:</b> <a href="${explorerUrl}">${withdrawal.txid}</a>\n\n` +
-        `Thank you for earning with us! Continue sharing your link to earn more!`,
-        { parse_mode: "HTML" }
-      ).catch(() => {});
-
-      // Broadcast real withdrawal notice to group
-      const settings = getAllSettings();
-      if (settings.group_id) {
-        sendGroupWithdrawalNotice(user.first_name || "Community Member", withdrawal.amount, withdrawal.method).catch(() => {});
-      }
-    } catch (err) {
-      await ctx.answerCbQuery(`Error: ${err.message}`, { show_alert: true });
-    }
-  });
-
-  bot.action(/^adm_wth_rej:(.+)$/, async (ctx) => {
-    if (!adminOnly(ctx)) return;
-    const withdrawId = ctx.match[1];
-    ctx.session.adminAction = { type: "reject_withdraw", withdrawId: withdrawId };
-    await ctx.answerCbQuery();
-    await ctx.reply(`Send the rejection reason for withdrawal <code>${withdrawId}</code>:`, { parse_mode: "HTML" });
-  });
-
-  // 3. Settings
-  bot.action("adm:settings", async (ctx) => {
-    if (!adminOnly(ctx)) return;
+  // =====================================================
+  // 4. SETTINGS
+  // =====================================================
+  async function showAdminSettings(ctx) {
     const s = getAllSettings();
+    const bpayEnabled = s.binance_pay_enabled !== false;
 
     const text =
-      `⚙️ <b>BOT SETTINGS CONTROL PANEL</b>\n` +
+      `⚙️ <b>STORE SETTINGS PANEL</b>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
-      `🏷️ <b>Bot Title:</b> ${escapeHtml(s.bot_title || "USDT Referral Earning Bot")}\n\n` +
-      `👥 <b>Min Referrals for Withdraw:</b> <b>${s.referrals_required || 3} members</b>\n` +
-      `💵 <b>Referrer Reward:</b> <b>${money(s.referral_reward_amount || 2.50)} per invite</b>\n` +
-      `🎁 <b>Joiner Welcome Bonus:</b> <b>${money(s.welcome_bonus_amount || 2.00)}</b>\n` +
-      `💳 <b>Min Withdraw Amount:</b> <b>${money(s.min_withdraw || 7.50)}</b>\n` +
-      `📥 <b>Activation Deposit:</b> <b>${money(s.activation_deposit_amount || 1.00)}</b>\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `🏷️ <b>Store Title:</b> ${escapeHtml(s.bot_title || "Cloud & AI Resource Store")}\n` +
+      `🟡 <b>Binance Pay Deposit:</b> ${bpayEnabled ? "✅ ON (Enabled)" : "❌ OFF (Hidden)"}\n` +
       `🆔 <b>Binance Pay ID:</b> <code>${s.binance_pay_id || "None"}</code>\n` +
-      `🟢 <b>BEP20 Address:</b> <code>${s.bep20_usdt_address?.slice(0, 10)}...</code>\n` +
-      `🟣 <b>Polygon Address:</b> <code>${s.polygon_usdt_address?.slice(0, 10)}...</code>\n` +
+      `🟢 <b>BEP20 USDT Address:</b> <code>${s.bep20_usdt_address?.slice(0, 12)}...</code>\n` +
+      `🟣 <b>Polygon USDT Address:</b> <code>${s.polygon_usdt_address?.slice(0, 12)}...</code>\n` +
+      `⚪️ <b>Litecoin (LTC) Address:</b> <code>${(s.ltc_address || "ltc1q...").slice(0, 14)}...</code>\n` +
       `📢 <b>Channel:</b> ${s.channel_link}\n` +
       `👥 <b>Group:</b> ${s.group_link}\n` +
+      `📞 <b>Support Admin:</b> ${escapeHtml(s.support_username || "@Morsalen0220")}\n` +
       `🔒 <b>Force Join:</b> ${s.force_join_enabled ? "✅ ON" : "❌ OFF"}\n` +
-      `📢 <b>Auto-Poster (Group Only):</b> ${s.auto_broadcast_enabled !== false ? "✅ ON" : "❌ OFF"}\n` +
+      `📢 <b>Group Auto-Poster:</b> ${s.auto_broadcast_enabled !== false ? "✅ ON" : "❌ OFF"}\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `👇 <i>Tap any button below to update setting:</i>`;
 
     const kb = Markup.inlineKeyboard([
       [
-        Markup.button.callback("👥 Min Referrals", "adm_set:referrals_required"),
-        Markup.button.callback("💵 Refer Reward $", "adm_set:referral_reward_amount")
+        Markup.button.callback(
+          bpayEnabled ? "🟡 Binance Pay: ON (Tap to OFF)" : "🟡 Binance Pay: OFF (Tap to ON)",
+          "adm_toggle_bpay"
+        )
       ],
       [
-        Markup.button.callback("🎁 Joining Bonus $", "adm_set:welcome_bonus_amount"),
-        Markup.button.callback("💳 Min Withdraw $", "adm_set:min_withdraw")
-      ],
-      [
-        Markup.button.callback("📥 Activation Deposit $", "adm_set:activation_deposit_amount"),
-        Markup.button.callback("🟡 Binance Pay ID", "adm_set:binance_pay_id")
+        Markup.button.callback("🟡 Binance Pay ID", "adm_set:binance_pay_id"),
+        Markup.button.callback("⚪️ LTC Address", "adm_set:ltc_address")
       ],
       [
         Markup.button.callback("🟢 BEP20 USDT", "adm_set:bep20_usdt_address"),
         Markup.button.callback("🟣 Polygon USDT", "adm_set:polygon_usdt_address")
+      ],
+      [
+        Markup.button.callback("🏷️ Store Title", "adm_set:bot_title"),
+        Markup.button.callback("📞 Support Handle", "adm_set:support_username")
       ],
       [
         Markup.button.callback("📢 Channel Link", "adm_set:channel_link"),
@@ -352,8 +496,28 @@ function registerAdminHandlers(bot) {
       [Markup.button.callback("🔙 Back to Dashboard", "adm:menu")]
     ]);
 
+    if (ctx.callbackQuery) {
+      try {
+        return await ctx.editMessageText(text, { parse_mode: "HTML", ...kb });
+      } catch (e) {
+        return await ctx.reply(text, { parse_mode: "HTML", ...kb });
+      }
+    }
+    return await ctx.reply(text, { parse_mode: "HTML", ...kb });
+  }
+
+  bot.action("adm:settings", async (ctx) => {
+    if (!adminOnly(ctx)) return;
     await ctx.answerCbQuery();
-    await ctx.editMessageText(text, { parse_mode: "HTML", ...kb });
+    return showAdminSettings(ctx);
+  });
+
+  bot.action("adm_toggle_bpay", async (ctx) => {
+    if (!adminOnly(ctx)) return;
+    const current = getSetting("binance_pay_enabled") !== false;
+    setSetting("binance_pay_enabled", !current);
+    await ctx.answerCbQuery(`Binance Pay Deposit is now ${!current ? "ON ✅" : "OFF ❌"}`);
+    return showAdminSettings(ctx);
   });
 
   bot.action(/^adm_set:(.+)$/, async (ctx) => {
@@ -361,23 +525,7 @@ function registerAdminHandlers(bot) {
     const key = ctx.match[1];
     ctx.session.adminAction = { type: "set_setting", key };
     await ctx.answerCbQuery();
-
-    const descriptions = {
-      referrals_required: "👥 <b>Minimum Referrals Required for Withdrawal</b>\n(e.g. <code>3</code>)",
-      referral_reward_amount: "💵 <b>Referrer Reward Amount per Invite (USDT)</b>\n(e.g. <code>2.50</code>)",
-      welcome_bonus_amount: "🎁 <b>New User Joining / Welcome Bonus (USDT)</b>\n(e.g. <code>2.00</code>)",
-      min_withdraw: "💳 <b>Minimum Withdrawal Amount (USDT)</b>\n(e.g. <code>7.50</code>)",
-      activation_deposit_amount: "📥 <b>1-Time Security Verification Deposit (USDT)</b>\n(e.g. <code>1.00</code>)",
-      binance_pay_id: "🟡 <b>Admin Binance Pay ID</b>\n(e.g. <code>123456789</code>)",
-      bep20_usdt_address: "🟢 <b>USDT (BEP-20 BSC) Wallet Address</b>\n(e.g. <code>0x1234...abcd</code>)",
-      polygon_usdt_address: "🟣 <b>USDT (Polygon Network) Wallet Address</b>\n(e.g. <code>0x1234...abcd</code>)",
-      channel_link: "📢 <b>Telegram Channel Link</b>\n(e.g. <code>https://t.me/RefferRewardss</code>)",
-      group_link: "👥 <b>Telegram Group Link</b>\n(e.g. <code>https://t.me/RefferRewardes</code>)",
-      bot_title: "🏷️ <b>Bot Title</b>\n(e.g. <code>USDT Referral Earning Bot</code>)"
-    };
-
-    const desc = descriptions[key] || `<b>${key}</b>`;
-    await ctx.reply(`✏️ <b>Enter new value for:</b>\n${desc}\n\n<i>Type /cancel to cancel.</i>`, { parse_mode: "HTML" });
+    await ctx.reply(`✏️ <b>Enter new value for <code>${key}</code>:</b>\n\n<i>Type /cancel to cancel.</i>`, { parse_mode: "HTML" });
   });
 
   bot.action("adm_toggle_fj", async (ctx) => {
@@ -385,7 +533,7 @@ function registerAdminHandlers(bot) {
     const current = Boolean(getSetting("force_join_enabled"));
     setSetting("force_join_enabled", !current);
     await ctx.answerCbQuery(`Force Join is now ${!current ? "ENABLED" : "DISABLED"}`);
-    return showAdminDashboard(ctx);
+    return showAdminSettings(ctx);
   });
 
   bot.action("adm_toggle_bc", async (ctx) => {
@@ -393,58 +541,50 @@ function registerAdminHandlers(bot) {
     const current = getSetting("auto_broadcast_enabled") !== false;
     setSetting("auto_broadcast_enabled", !current);
     await ctx.answerCbQuery(`Auto Broadcaster is now ${!current ? "ENABLED" : "DISABLED"}`);
-    return showAdminDashboard(ctx);
+    return showAdminSettings(ctx);
   });
 
-  // 4. Broadcast to All Users
+  // =====================================================
+  // 5. USERS, SEARCH & BROADCAST
+  // =====================================================
   bot.action("adm:broadcast", async (ctx) => {
     if (!adminOnly(ctx)) return;
     ctx.session.adminAction = { type: "broadcast" };
     await ctx.answerCbQuery();
-    await ctx.reply("📢 <b>Broadcast to All Users</b>\n\nSend the message you want to broadcast to all registered bot users:\n\n<i>Type /cancel to cancel.</i>", {
+    await ctx.reply("📢 <b>Broadcast to All Users</b>\n\nSend the announcement message to broadcast to all users:\n\n<i>Type /cancel to cancel.</i>", {
       parse_mode: "HTML"
     });
   });
 
-  // 5. Direct Message Specific User
   bot.action("adm:dm_user", async (ctx) => {
     if (!adminOnly(ctx)) return;
     ctx.session.adminAction = { type: "dm_enter_user_id" };
     await ctx.answerCbQuery();
-    await ctx.reply("📩 <b>Direct Message User</b>\n\nPlease enter the recipient's numeric <b>Telegram User ID</b>:\n\n<i>Type /cancel to cancel.</i>", {
+    await ctx.reply("📩 <b>Direct Message User</b>\n\nEnter the recipient's numeric <b>Telegram User ID</b>:\n\n<i>Type /cancel to cancel.</i>", {
       parse_mode: "HTML"
     });
   });
 
-  // 6. Find User
   bot.action("adm:find_user", async (ctx) => {
     if (!adminOnly(ctx)) return;
     ctx.session.adminAction = { type: "find_user" };
     await ctx.answerCbQuery();
-    await ctx.reply("🔍 <b>Find & Manage User</b>\n\nPlease enter the user's <b>Telegram ID</b> or <b>@username</b>:\n\n<i>Type /cancel to cancel.</i>", {
+    await ctx.reply("🔍 <b>Find &amp; Manage User</b>\n\nEnter the user's <b>Telegram ID</b> or <b>@username</b>:\n\n<i>Type /cancel to cancel.</i>", {
       parse_mode: "HTML"
     });
   });
 
-  // 7. Users & Referrals Overview & Leaderboard
   bot.action("adm:users", async (ctx) => {
     if (!adminOnly(ctx)) return;
     const allUsers = getAllUsers();
-    const totalCount = allUsers.length;
-    const totalRef = allUsers.reduce((acc, u) => acc + (u.referral_count || 0), 0);
-    const activatedCount = allUsers.filter((u) => u.is_activated).length;
-
-    const sortedByRef = [...allUsers].sort((a, b) => (b.referral_count || 0) - (a.referral_count || 0));
-    const top10 = sortedByRef.slice(0, 10);
+    const sorted = [...allUsers].sort((a, b) => (b.total_spent || 0) - (a.total_spent || 0));
+    const top10 = sorted.slice(0, 10);
 
     let text =
-      `👥 <b>USERS & REFERRALS OVERVIEW</b>\n` +
+      `👥 <b>BUYERS &amp; USERS OVERVIEW</b>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
-      `👤 <b>Total Registered:</b> <b>${totalCount}</b> users\n` +
-      `⚡️ <b>Activated ($1 Paid):</b> <b>${activatedCount}</b> users\n` +
-      `🔗 <b>Total Referrals:</b> <b>${totalRef}</b> members\n\n` +
-      `🏆 <b>TOP 10 REFERRERS LEADERBOARD:</b>\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n`;
+      `👤 <b>Total Users:</b> <b>${allUsers.length}</b>\n\n` +
+      `🏆 <b>TOP BUYERS:</b>\n`;
 
     if (top10.length === 0) {
       text += `<i>No users registered yet.</i>\n`;
@@ -452,37 +592,29 @@ function registerAdminHandlers(bot) {
       top10.forEach((u, idx) => {
         const name = escapeHtml([u.first_name, u.last_name].filter(Boolean).join(" ") || "User");
         const uname = u.username ? `@${escapeHtml(u.username)}` : `<code>${u.id}</code>`;
-        const refs = u.referral_count || 0;
-        const bal = money(u.wallet_balance || 0);
-        const act = u.is_activated ? "✅ Active" : "⏳ Unverified";
-        text += `<b>#${idx + 1}</b> ${name} (${uname})\n` +
-                `   └ 👥 <b>${refs} referrals</b> • 💰 ${bal} • ${act}\n`;
+        text += `<b>#${idx + 1}</b> ${name} (${uname}) — 👛 ${money(u.wallet_balance || 0)} • 🛒 Spent: ${money(u.total_spent || 0)}\n`;
       });
     }
 
-    text += `━━━━━━━━━━━━━━━━━━━━\n<i>Tap a user button below or use Search to inspect full user controls.</i>`;
-
     const userButtons = top10.slice(0, 5).map((u) => [
-      Markup.button.callback(`👤 ${u.first_name || u.id} (${u.referral_count || 0} refs)`, `adm_view_user:${u.id}`)
+      Markup.button.callback(`👤 ${u.first_name || u.id} (Bal: $${Number(u.wallet_balance || 0).toFixed(2)})`, `adm_view_user:${u.id}`)
     ]);
 
-    const navButtons = [
-      [Markup.button.callback("🔍 Find / Search User", "adm:find_user"), Markup.button.callback("📩 DM Specific User", "adm:dm_user")],
+    userButtons.push(
+      [Markup.button.callback("🔍 Search User", "adm:find_user"), Markup.button.callback("📩 DM User", "adm:dm_user")],
       [Markup.button.callback("🔙 Back to Dashboard", "adm:menu")]
-    ];
+    );
 
     await ctx.answerCbQuery();
     await ctx.editMessageText(text, {
       parse_mode: "HTML",
-      ...Markup.inlineKeyboard([...userButtons, ...navButtons])
+      ...Markup.inlineKeyboard(userButtons)
     });
   });
 
-  // 8. Individual User Actions
   bot.action(/^adm_view_user:(.+)$/, async (ctx) => {
     if (!adminOnly(ctx)) return;
-    const targetId = ctx.match[1];
-    const targetUser = getUser(targetId);
+    const targetUser = getUser(ctx.match[1]);
     if (!targetUser) return ctx.answerCbQuery("User not found.", { show_alert: true });
 
     await ctx.answerCbQuery();
@@ -512,48 +644,31 @@ function registerAdminHandlers(bot) {
 
     ctx.session.adminAction = { type: "adjust_balance", targetUserId: targetId };
     await ctx.answerCbQuery();
-    await ctx.reply(`💰 <b>Adjust Balance for User:</b> <code>${targetId}</code>\nCurrent Balance: <b>${money(targetUser.wallet_balance || 0)}</b>\n\nEnter the amount to add or subtract (e.g. <code>+5</code> or <code>-2.50</code>):\n\n<i>Type /cancel to cancel.</i>`, {
-      parse_mode: "HTML"
-    });
+    await ctx.reply(
+      `💰 <b>Adjust Balance for User:</b> <code>${targetId}</code>\n` +
+      `Current Balance: <b>${money(targetUser.wallet_balance || 0)}</b>\n\n` +
+      `Enter amount to add or subtract (e.g. <code>+45</code> or <code>-15</code>):\n\n` +
+      `<i>Type /cancel to cancel.</i>`,
+      { parse_mode: "HTML" }
+    );
   });
 
-  // Quick Referrals Adjust (+3, +4, -1)
-  bot.action(/^adm_qref:([^:]+):([-\d]+)$/, async (ctx) => {
+  bot.action(/^adm_qref:([^:]+):(-?\d+)$/, async (ctx) => {
     if (!adminOnly(ctx)) return;
     const targetId = ctx.match[1];
     const delta = parseInt(ctx.match[2], 10);
-    const targetUser = getUser(targetId);
-    if (!targetUser) return ctx.answerCbQuery("User not found.", { show_alert: true });
-
-    // syncBalance: if delta > 0, also add the referral bonus ($2.50 per referral) to wallet balance
-    const syncBalance = delta > 0;
-    const result = adjustUserReferrals(targetId, delta, syncBalance);
-    if (!result) return ctx.answerCbQuery("Failed to update referrals.", { show_alert: true });
-
-    const updated = getUser(targetId);
-    const bonusNotice = syncBalance ? ` (+$${(delta * 2.5).toFixed(2)} USDT bonus added)` : "";
-    await ctx.answerCbQuery(`Updated: ${delta >= 0 ? "+" : ""}${delta} referrals${bonusNotice}! Total: ${result.newCount}`, { show_alert: true });
-
-    // Notify user in private chat
-    bot.telegram.sendMessage(
-      targetId,
-      `<blockquote>🎉 <b>REFERRAL STATUS UPDATED!</b>\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `📊 <b>Adjustment:</b> <b>${delta >= 0 ? "+" : ""}${delta} Referrals</b>${bonusNotice}\n` +
-      `👥 <b>Total Referrals:</b> <b>${result.newCount} members</b>\n` +
-      `👛 <b>Wallet Balance:</b> <b>${money(result.newBalance)}</b>\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `<i>Your referral statistics were updated by Administration.</i></blockquote>`,
-      { parse_mode: "HTML" }
-    ).catch(() => {});
-
-    const { text: profileText, kb: profileKb } = renderUserProfile(updated);
+    const newRefCount = adjustUserReferrals(targetId, delta);
+    if (newRefCount === false) {
+      return ctx.answerCbQuery("User not found.", { show_alert: true });
+    }
+    await ctx.answerCbQuery(`✅ Referrals updated: ${newRefCount}`);
+    const updatedUser = getUser(targetId);
+    const { text: profileText, kb: profileKb } = renderUserProfile(updatedUser);
     try {
       await ctx.editMessageText(profileText, { parse_mode: "HTML", ...profileKb });
     } catch (e) {}
   });
 
-  // Custom Referrals Adjust Prompt
   bot.action(/^adm_user_adj_ref:(.+)$/, async (ctx) => {
     if (!adminOnly(ctx)) return;
     const targetId = ctx.match[1];
@@ -564,248 +679,291 @@ function registerAdminHandlers(bot) {
     await ctx.answerCbQuery();
     await ctx.reply(
       `👥 <b>Adjust Referrals for User:</b> <code>${targetId}</code>\n` +
-      `Current Referrals: <b>${targetUser.referral_count || 0} members</b>\n\n` +
-      `👉 <b>Enter the number of referrals to add or remove:</b>\n` +
-      `• Examples: <code>+3</code>, <code>+4</code>, <code>-1</code>, or <code>-2</code>\n\n` +
-      `<i>(Tip: Adding positive referrals will also automatically credit the referral reward balance).</i>\n\n` +
+      `Current Referrals: <b>${targetUser.referral_count || 0}</b>\n\n` +
+      `Enter number of referrals to add or subtract (e.g. <code>+30</code> or <code>-5</code>):\n\n` +
       `<i>Type /cancel to cancel.</i>`,
       { parse_mode: "HTML" }
     );
   });
 
-  bot.action(/^adm_user_toggle_act:(.+)$/, async (ctx) => {
-    if (!adminOnly(ctx)) return;
-    const targetId = ctx.match[1];
-    const targetUser = getUser(targetId);
-    if (!targetUser) return ctx.answerCbQuery("User not found.", { show_alert: true });
-
-    const newStatus = !targetUser.is_activated;
-    setUserActivated(targetId, newStatus);
-    await ctx.answerCbQuery(newStatus ? "Account Activated! ✅" : "Account Deactivated! ❌", { show_alert: true });
-
-    const updated = getUser(targetId);
-    const { text: profileText, kb: profileKb } = renderUserProfile(updated);
-    await ctx.editMessageText(profileText, { parse_mode: "HTML", ...profileKb });
-  });
-
-  // 9. Test Group Broadcast Menu & Actions
+  // =====================================================
+  // 6. TEST GROUP BROADCAST & PROMO POSTS
+  // =====================================================
   bot.action("adm:test_broadcast", async (ctx) => {
     if (!adminOnly(ctx)) return;
     const kb = Markup.inlineKeyboard([
-      [Markup.button.callback("👥 Test Real Referral Post", "adm_test_ref")],
-      [Markup.button.callback("💰 Test Deposit Post (+1.00)", "adm_test_dep")],
-      [Markup.button.callback("💸 Test Withdrawal Post ($7.50)", "adm_test_wth")],
-      [Markup.button.callback("🎉 Test Milestone Post (3 refs)", "adm_test_mls")],
-      [Markup.button.callback("💎 Test Activation Post ($1.00)", "adm_test_act")],
+      [Markup.button.callback("🛍️ Test Order Delivered (Claude Max 20x)", "adm_test_ord")],
+      [Markup.button.callback("☁️ Test Order Delivered (GCP $300 USA)", "adm_test_gcp")],
+      [Markup.button.callback("💰 Test Wallet Deposit (+$55.00)", "adm_test_dep")],
+      [Markup.button.callback("🔥 Test Stock Restock (AWS 5v 50RPM)", "adm_test_rst")],
       [Markup.button.callback("🔙 Back to Dashboard", "adm:menu")]
     ]);
     await ctx.answerCbQuery();
-    await ctx.editMessageText("🧪 <b>Choose a test post to publish to the Group:</b>\n<i>(Note: Posts go to Group only, not Channel)</i>", {
+    await ctx.editMessageText("🧪 <b>Choose a test proof post to publish to the Group:</b>", {
       parse_mode: "HTML",
       ...kb
     });
   });
 
-  bot.action("adm_test_ref", async (ctx) => {
+  bot.action("adm_test_ord", async (ctx) => {
     if (!adminOnly(ctx)) return;
-    const mockRef = { id: ctx.from.id, first_name: ctx.from.first_name || "Morsalen", username: ctx.from.username || "Morsalen0220", referral_count: 1 };
-    const mockNew = { id: 5588234368, first_name: "Rashid", username: "Rashid_Telegram" };
-    const res = await sendRealReferralNoticeToGroup(mockRef, mockNew);
-    await ctx.answerCbQuery(res.success ? "Real referral notice sent to group! 🎉" : `Failed: ${res.error}`, { show_alert: true });
+    const name = getRandomCustomerName();
+    const res = await sendGroupOrderNotice(name, "Claude Max 20x (Finished Account)", 1, 45.00);
+    await ctx.answerCbQuery(res.success ? "Order proof sent to group! 🛍️" : `Failed: ${res.error}`, { show_alert: true });
+  });
+
+  bot.action("adm_test_gcp", async (ctx) => {
+    if (!adminOnly(ctx)) return;
+    const name = getRandomCustomerName();
+    const res = await sendGroupOrderNotice(name, "Google Cloud GCP $300 (USA Region)", 2, 30.00);
+    await ctx.answerCbQuery(res.success ? "GCP $300 order proof sent to group! ☁️" : `Failed: ${res.error}`, { show_alert: true });
   });
 
   bot.action("adm_test_dep", async (ctx) => {
     if (!adminOnly(ctx)) return;
     const name = getRandomCustomerName();
-    const res = await sendGroupDepositNotice(name, 1.00);
+    const res = await sendGroupDepositNotice(name, 55.00);
     await ctx.answerCbQuery(res.success ? "Deposit notice sent to group! 💰" : `Failed: ${res.error}`, { show_alert: true });
   });
 
-  bot.action("adm_test_wth", async (ctx) => {
+  bot.action("adm_test_rst", async (ctx) => {
     if (!adminOnly(ctx)) return;
-    const name = getRandomCustomerName();
-    const res = await sendGroupWithdrawalNotice(name, 7.50);
-    await ctx.answerCbQuery(res.success ? "Withdrawal proof sent to group! 💸" : `Failed: ${res.error}`, { show_alert: true });
+    const res = await sendGroupRestockNotice("AWS Cloud 5vCPU (50 RPM High-Speed)", 30, 32.00);
+    await ctx.answerCbQuery(res.success ? "Restock alert sent to group! 🔥" : `Failed: ${res.error}`, { show_alert: true });
   });
 
-  bot.action("adm_test_mls", async (ctx) => {
+  bot.command("promo", async (ctx) => {
     if (!adminOnly(ctx)) return;
-    const name = getRandomCustomerName();
-    const res = await sendGroupMilestoneNotice(name, 3, 7.50);
-    await ctx.answerCbQuery(res.success ? "Milestone notice sent to group! 🎉" : `Failed: ${res.error}`, { show_alert: true });
+    await showPromoCatalogMenu(ctx);
   });
 
-  bot.action("adm_test_act", async (ctx) => {
-    if (!adminOnly(ctx)) return;
-    const name = getRandomCustomerName();
-    const res = await sendGroupActivationNotice(name, 1.00);
-    await ctx.answerCbQuery(res.success ? "Activation notice sent to group! 💎" : `Failed: ${res.error}`, { show_alert: true });
-  });
-
-  // 10. Promo & Share Posts for Admin
   bot.action("adm:promos", async (ctx) => {
     if (!adminOnly(ctx)) return;
     await ctx.answerCbQuery();
-    await showAdminPromoPosts(bot, ctx, 1);
+    await showPromoCatalogMenu(ctx);
   });
 
-  bot.action(/^adm_promo:(\d+)$/, async (ctx) => {
+  bot.action(/^adm_promo_view:([^:]+):(\d+)$/, async (ctx) => {
     if (!adminOnly(ctx)) return;
     await ctx.answerCbQuery();
-    await showAdminPromoPosts(bot, ctx, Number(ctx.match[1]));
+    await showPromoTemplateView(bot, ctx, ctx.match[1], Number(ctx.match[2]));
+  });
+
+  bot.action(/^adm_promo_send:(grp|chn):([^:]+):(\d+)$/, async (ctx) => {
+    if (!adminOnly(ctx)) return;
+    const dest = ctx.match[1]; // 'grp' | 'chn'
+    const targetId = ctx.match[2];
+    const postNum = Number(ctx.match[3]);
+
+    const settings = getAllSettings();
+    const chatId = dest === "grp" ? settings.group_id : settings.channel_id;
+    if (!chatId) {
+      return ctx.answerCbQuery(`❌ No ${dest === "grp" ? "group_id" : "channel_id"} configured in settings!`, {
+        show_alert: true
+      });
+    }
+
+    const botUsername = await getBotUsername(bot);
+    const storeLink = `https://t.me/${botUsername}`;
+    const templates = buildPromoTemplates(targetId, storeLink, settings);
+    const chosen = templates[postNum - 1] || templates[0];
+
+    try {
+      await bot.telegram.sendMessage(chatId, chosen.htmlText, {
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+        ...Markup.inlineKeyboard([[Markup.button.url("🛒 Buy Instantly in Bot", storeLink)]])
+      });
+      await ctx.answerCbQuery(`✅ Promo Post #${postNum} published to ${dest === "grp" ? "Group" : "Channel"}!`, {
+        show_alert: true
+      });
+    } catch (err) {
+      await ctx.answerCbQuery(`❌ Failed to post: ${err.message}`, { show_alert: true });
+    }
   });
 }
 
-// Promotional & Share Posts Generator (Admin Only)
-async function showAdminPromoPosts(bot, ctx, templateIndex = 1) {
-  const botUsername = await getBotUsername(bot);
-  const adminId = ADMIN_ID || ctx.from.id;
-  const botRefLink = `https://t.me/${botUsername}?start=ref_${adminId}`;
-
-  const templates = [
-    {
-      title: "1. 🇧🇩 বাংলা ভাইরাল পোস্ট (Super Viral)",
-      buttonLabel: "1. বাংলা ভাইরাল",
-      text:
-`🔥 টেলিগ্রামের সেরা ইনকাম বট! 🔥
-
-🎁 জয়েন করলেই পাচ্ছেন $2.00 USDT ওয়েলকাম বোনাস ফ্রি!
-👥 প্রতি ফ্রেন্ডকে রেফার করলেই পাবেন $2.50 USDT করে!
-⚡️ কোনো ইনভেস্ট ছাড়াই একদম ফ্রিতে ইনকাম শুরু করুন!
-💳 Binance Pay, BEP-20 (BSC) এবং Polygon দিয়ে রিয়েল উইথড্র!
-
-👉 এখনই ফ্রিতে ইনকাম শুরু করতে নিচের লিংকে ক্লিক করুন:
-${botRefLink}
-
-🛑 সীমিত সময়ের অফার, দ্রুত জয়েন করুন! 🚀`
-    },
-    {
-      title: "2. 🎁 $2.00 Welcome Bonus Hook (Bangla)",
-      buttonLabel: "2. বোনাস অফার",
-      text:
-`💎 $2.00 USDT Free Sign-Up Bonus! 💎
-
-অনলাইনে ঘরে বসে রিয়েল ইনকামের সেরা সুযোগ!
-✅ Instant $2.00 Welcome Bonus
-✅ $2.50 USDT per active referral
-✅ Fast & Verified automated withdrawals
-✅ Binance Pay / USDT Supported
-
-👇 নিচের লিংকে ক্লিক করে জয়েন করে এখনই বোনাস নিন:
-${botRefLink}`
-    },
-    {
-      title: "3. 🇬🇧 English: Crypto / Airdrop Hunters (High Converting)",
-      buttonLabel: "3. 🇬🇧 Airdrop Promo",
-      text:
-`🎁 EXCLUSIVE USDT AIRDROP & EARNING EVENT 🎁
-
-🚀 Legit & Verified Telegram Earning Protocol!
-💵 Instant $2.00 USDT Welcome Bonus credited upon start!
-👥 Earn $2.50 USDT for every active member you invite!
-🔒 Zero Investment Needed - 100% Free to join!
-⚡️ Automated Payouts via Binance Pay, BEP-20 (BSC) & Polygon!
-
-👇 Start earning USDT right now:
-${botRefLink}
-
-⏳ Limited reward pool available - Don't miss out! 🏃‍♂️💨`
-    },
-    {
-      title: "4. 🇬🇧 English: Daily Passive Income Hook ($15-$50 Daily)",
-      buttonLabel: "4. 🇬🇧 Daily Earning",
-      text:
-`💰 EARN $15 - $50 DAILY IN USDT ON TELEGRAM 💰
-
-Looking for an honest online earning opportunity?
-✅ Free $2.00 Sign-Up Bonus instantly
-✅ $2.50 USDT for each active invite
-✅ Instant withdrawal unlocked at just 3 referrals
-✅ Verified On-Chain Transactions (Binance Pay & BSC)
-
-👉 Click the link to start today:
-${botRefLink}`
-    },
-    {
-      title: "5. 🇬🇧 English: Official Web3 Protocol Announcement",
-      buttonLabel: "5. 🇬🇧 Web3 Protocol",
-      text:
-`🌐 OFFICIAL WEB3 USDT REFERRAL PROTOCOL 🌐
-
-Join our decentralized referral network and start earning real USDT:
-💎 Welcome Grant: $2.00 USDT
-💎 Direct Referral Commission: $2.50 USDT
-💎 Payout Channels: Binance Pay ID | USDT BEP-20 | Polygon
-🛡️ Protected by Anti-Sybil Smart Security & Instant Dispatch
-
-🔗 Official Access Link:
-${botRefLink}`
-    },
-    {
-      title: "6. 🇬🇧 English: Mobile / Work From Home Community Hook",
-      buttonLabel: "6. 🇬🇧 Work From Home",
-      text:
-`📲 WORK FROM HOME: EARN CRYPTO FROM YOUR PHONE! 📲
-
-No skills or investments required. Just invite friends and get paid:
-1️⃣ Start the bot & get $2.00 USDT Free
-2️⃣ Share your link & get $2.50 USDT per referral
-3️⃣ Withdraw directly to Binance or Trust Wallet!
-
-👇 Get started in seconds:
-${botRefLink}`
-    },
-    {
-      title: "7. 🇬🇧 English: Short & Punchy (For Comments, DMs, Twitter/X)",
-      buttonLabel: "7. 🇬🇧 Short Promo",
-      text:
-`🔥 FREE USDT ALERT! Get $2.00 Welcome Bonus + $2.50 for every friend you invite! Automated Binance Pay and BEP-20 withdrawals. Claim yours now:
-${botRefLink}`
-    },
-    {
-      title: "8. ⚡️ বাংলা শর্ট মেসেজ (WhatsApp & FB কমেন্টের জন্য)",
-      buttonLabel: "8. ⚡️ বাংলা শর্ট",
-      text:
-`টেলিগ্রাম থেকে ফ্রি ইনকাম করুন! জয়েন করলেই $2.00 ডলার বোনাস আর প্রতি রেফারে $2.50 ডলার। ১০০% রিয়েল পেমেন্ট! জয়েন লিংক:
-${botRefLink}`
-    }
-  ];
-
-  const currentTpl = templates[templateIndex - 1] || templates[0];
-  const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(botRefLink)}&text=${encodeURIComponent(currentTpl.text.replace(botRefLink, "").trim())}`;
-  const whatsappUrl = `https://api.whatsapp.com/send?text=${encodeURIComponent(currentTpl.text)}`;
+// =====================================================
+// PROMO GENERATOR (2 POSTS FOR ALL PRODUCTS + 2 POSTS PER PRODUCT)
+// =====================================================
+async function showPromoCatalogMenu(ctx) {
+  const products = getAllProducts();
 
   const text =
-    `🚀 <b>PROMOTIONAL & SHARE POSTS (ADMIN ONLY)</b>\n` +
+    `🚀 <b>PROMO POSTS MANAGER (ADMIN)</b>\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
-    `📌 <b>Current Template (${templateIndex}/${templates.length}):</b> <b>${escapeHtml(currentTpl.title)}</b>\n\n` +
-    `👇 <b>নিচের বক্সে একবার ট্যাপ/ক্লিক করলেই পুরো পোস্ট ও রেফার লিংক একসাথে কপি হয়ে যাবে:</b>\n\n` +
-    `<pre><code>${escapeHtml(currentTpl.text)}</code></pre>\n\n` +
-    `💡 <i>কপি করে যেকোনো গ্রুপ, চ্যানেল বা ফোরামে পোস্ট করুন অথবা নিচের বাটন দিয়ে সরাসরি শেয়ার করুন:</i>`;
+    `• <b>🌟 All Products Promo:</b> 2 Ready Full-Catalog Posts\n` +
+    `• <b>📦 Individual Products (${products.length}):</b> 2 Ready Posts for Every Product (based on live price &amp; bulk rate)\n\n` +
+    `👇 <i>Select <b>All Products Promo</b> or any product below to view, copy, or 1-click post to Group/Channel:</i>`;
+
+  const rows = [
+    [Markup.button.callback("🌟 All Products Promo (2 Ready Posts)", "adm_promo_view:all:1")]
+  ];
+
+  products.forEach((p) => {
+    rows.push([
+      Markup.button.callback(
+        `📦 ${p.name.slice(0, 28)} ($${Number(p.price).toFixed(0)}) • 2 Posts`,
+        `adm_promo_view:${p.id}:1`
+      )
+    ]);
+  });
+
+  rows.push([Markup.button.callback("🔙 Back to Admin Dashboard", "adm:menu")]);
+
+  const kb = Markup.inlineKeyboard(rows);
+  if (ctx.callbackQuery) {
+    try {
+      return await ctx.editMessageText(text, { parse_mode: "HTML", ...kb });
+    } catch (e) {
+      return await ctx.reply(text, { parse_mode: "HTML", ...kb });
+    }
+  }
+  return await ctx.reply(text, { parse_mode: "HTML", ...kb });
+}
+
+function buildPromoTemplates(targetId, storeLink, settings) {
+  const products = getAllProducts();
+  const payMethods = `USDT (BEP-20 / Polygon), Litecoin (LTC)${settings.binance_pay_enabled !== false ? " & Binance Pay" : ""}`;
+
+  if (targetId === "all") {
+    const aiProds = products.filter((p) => p.category === "ai_sub");
+    const cloudProds = products.filter((p) => p.category === "cloud_acc");
+    const keyProds = products.filter((p) => p.category === "api_key");
+    const esimProds = products.filter((p) => p.category === "esim_tools");
+
+    const fmtLine = (p) => {
+      const bulk = getUnitPrice(p, 5);
+      const bulkStr = bulk < p.price ? ` (Bulk 5+: $${bulk.toFixed(2)})` : "";
+      return `• ${p.name} — $${Number(p.price).toFixed(2)}${bulkStr}`;
+    };
+
+    const post1Plain =
+`🔥 OFFICIAL CLOUD & AI RESOURCE STORE — FULL CATALOG 🔥
+━━━━━━━━━━━━━━━━━━━━
+🤖 AI Max & Pro Subscriptions:
+${aiProds.map(fmtLine).join("\n")}
+
+☁️ Cloud Trial & Enterprise Accounts:
+${cloudProds.map(fmtLine).join("\n")}
+
+🔑 High-Quota Official API Keys:
+${keyProds.map(fmtLine).join("\n")}
+
+📱 Global eSIM & Verification:
+${esimProds.map(fmtLine).join("\n")}
+━━━━━━━━━━━━━━━━━━━━
+💳 Payment: ${payMethods}
+⚡️ 24/7 Instant Automated Delivery via Bot:
+👉 ${storeLink}`;
+
+    const post2Plain =
+`🚀 FLASH WHOLESALE & RETAIL STOCK (大量现货 • 自动发货) 🚀
+━━━━━━━━━━━━━━━━━━━━
+${products.map((p) => `✅ ${p.name}: $${Number(p.price).toFixed(2)} (Stock: ${p.stock || 0})`).join("\n")}
+━━━━━━━━━━━━━━━━━━━━
+📦 Bulk 5+ Orders: Automatic Wholesale Discount Applied!
+💰 Accepted: ${payMethods}
+🛒 Order Instantly 24/7 in Our Automated Bot:
+👉 ${storeLink}`;
+
+    return [
+      {
+        title: "🌟 All Products — Post #1 (Categorized Full Catalog)",
+        plainText: post1Plain,
+        htmlText: `<blockquote>${escapeHtml(post1Plain)}</blockquote>`
+      },
+      {
+        title: "🌟 All Products — Post #2 (Flash Stock & Wholesale List)",
+        plainText: post2Plain,
+        htmlText: `<blockquote>${escapeHtml(post2Plain)}</blockquote>`
+      }
+    ];
+  }
+
+  const p = getProduct(targetId) || products[0];
+  const unitPrice = Number(p.price || 15);
+  const bulkPrice = getUnitPrice(p, 5);
+  const hasBulk = bulkPrice < unitPrice;
+  const stockCount = Number(p.stock || 0);
+
+  const post1Plain =
+`🔥 ${p.name.toUpperCase()} — IN STOCK NOW! 🔥
+━━━━━━━━━━━━━━━━━━━━
+💵 Retail Price: $${unitPrice.toFixed(2)} USDT${hasBulk ? `\n📦 Bulk Price (5+ Units): $${bulkPrice.toFixed(2)} USDT / each` : ""}
+📊 Live Stock Available: ${stockCount} Units Ready 🟢
+━━━━━━━━━━━━━━━━━━━━
+📝 Product Highlights:
+${p.description}
+
+🛡️ Guarantee & Terms:
+${p.terms}
+━━━━━━━━━━━━━━━━━━━━
+💳 Accepted Payments: ${payMethods}
+⚡️ 24/7 Instant Automated Delivery via Bot:
+👉 ${storeLink}`;
+
+  const post2Plain =
+`⚡️ FLASH DEAL & RESTOCK: ${p.name} ⚡️
+━━━━━━━━━━━━━━━━━━━━
+✅ Verified & Ready for Immediate Dispatch!
+💰 Single Unit: $${unitPrice.toFixed(2)} USDT${hasBulk ? ` | Bulk (5+): $${bulkPrice.toFixed(2)} USDT` : ""}
+📦 Current Inventory: ${stockCount} Fresh Units
+
+${p.description}
+
+💳 Pay via ${payMethods}
+🛒 Grab yours now before stock runs out:
+👉 ${storeLink}`;
+
+  return [
+    {
+      title: `📦 ${p.name} — Post #1 (Detailed Feature Promo)`,
+      plainText: post1Plain,
+      htmlText: `<blockquote>${escapeHtml(post1Plain)}</blockquote>`
+    },
+    {
+      title: `📦 ${p.name} — Post #2 (Flash Restock & Deal Promo)`,
+      plainText: post2Plain,
+      htmlText: `<blockquote>${escapeHtml(post2Plain)}</blockquote>`
+    }
+  ];
+}
+
+async function showPromoTemplateView(bot, ctx, targetId = "all", postNumber = 1) {
+  const botUsername = await getBotUsername(bot);
+  const storeLink = `https://t.me/${botUsername}`;
+  const settings = getAllSettings();
+
+  const templates = buildPromoTemplates(targetId, storeLink, settings);
+  const idx = postNumber === 2 ? 1 : 0;
+  const currentTpl = templates[idx];
+
+  const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(storeLink)}&text=${encodeURIComponent(currentTpl.plainText.replace(storeLink, "").trim())}`;
+
+  const text =
+    `🚀 <b>READY PROMO POST (${idx + 1}/2)</b>\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `📌 <b>${escapeHtml(currentTpl.title)}</b>\n\n` +
+    `👇 <b>Tap inside the box below to copy the full post:</b>\n\n` +
+    `<pre><code>${escapeHtml(currentTpl.plainText)}</code></pre>\n\n` +
+    `💡 <i>Use the buttons below to switch between Post #1 &amp; Post #2, or publish directly to your Group/Channel with 1 click:</i>`;
 
   const kb = Markup.inlineKeyboard([
     [
-      Markup.button.url("🚀 Telegram Groups / Channels", shareUrl),
-      Markup.button.url("💬 WhatsApp Share", whatsappUrl)
+      Markup.button.callback(idx === 0 ? "🔘 Post #1 (Selected)" : "⚪️ View Post #1", `adm_promo_view:${targetId}:1`),
+      Markup.button.callback(idx === 1 ? "🔘 Post #2 (Selected)" : "⚪️ View Post #2", `adm_promo_view:${targetId}:2`)
     ],
     [
-      Markup.button.callback(templateIndex === 1 ? `🔘 ${templates[0].buttonLabel}` : templates[0].buttonLabel, "adm_promo:1"),
-      Markup.button.callback(templateIndex === 2 ? `🔘 ${templates[1].buttonLabel}` : templates[1].buttonLabel, "adm_promo:2")
+      Markup.button.callback("📤 Post to Group Now", `adm_promo_send:grp:${targetId}:${idx + 1}`),
+      Markup.button.callback("📢 Post to Channel Now", `adm_promo_send:chn:${targetId}:${idx + 1}`)
     ],
     [
-      Markup.button.callback(templateIndex === 3 ? `🔘 ${templates[2].buttonLabel}` : templates[2].buttonLabel, "adm_promo:3"),
-      Markup.button.callback(templateIndex === 4 ? `🔘 ${templates[3].buttonLabel}` : templates[3].buttonLabel, "adm_promo:4")
+      Markup.button.url("🚀 Share to Any Telegram Chat", shareUrl)
     ],
     [
-      Markup.button.callback(templateIndex === 5 ? `🔘 ${templates[4].buttonLabel}` : templates[4].buttonLabel, "adm_promo:5"),
-      Markup.button.callback(templateIndex === 6 ? `🔘 ${templates[5].buttonLabel}` : templates[5].buttonLabel, "adm_promo:6")
-    ],
-    [
-      Markup.button.callback(templateIndex === 7 ? `🔘 ${templates[6].buttonLabel}` : templates[6].buttonLabel, "adm_promo:7"),
-      Markup.button.callback(templateIndex === 8 ? `🔘 ${templates[7].buttonLabel}` : templates[7].buttonLabel, "adm_promo:8")
-    ],
-    [
-      Markup.button.callback("🔙 Back to Dashboard", "adm:menu")
+      Markup.button.callback("🔙 Back to Promo List", "adm:promos"),
+      Markup.button.callback("👑 Admin Dashboard", "adm:menu")
     ]
   ]);
 
@@ -820,7 +978,6 @@ ${botRefLink}`
   }
 }
 
-// Handler for admin text inputs (broadcasts, settings changes, user searching, DMs)
 async function handleAdminTextInput(bot, ctx, text) {
   if (!isAdmin(ctx) || !ctx.session?.adminAction) return false;
 
@@ -828,25 +985,10 @@ async function handleAdminTextInput(bot, ctx, text) {
   ctx.session.adminAction = null;
 
   if (action.type === "set_setting") {
-    let cleanVal = text.trim();
-
-    if (action.key === "referrals_required") {
-      const num = parseInt(cleanVal.replace(/[^0-9]/g, ""), 10);
-      cleanVal = isNaN(num) || num < 1 ? 3 : num;
-    } else if ([
-      "referral_reward_amount",
-      "welcome_bonus_amount",
-      "min_withdraw",
-      "activation_deposit_amount"
-    ].includes(action.key)) {
-      const num = parseFloat(cleanVal.replace(/[^0-9.]/g, ""));
-      cleanVal = isNaN(num) || num < 0 ? 0 : Number(num.toFixed(2));
-    }
-
+    const cleanVal = text.trim();
     setSetting(action.key, cleanVal);
     await ctx.reply(
-      `✅ <b>Setting Updated Successfully!</b>\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `✅ <b>Setting Updated!</b>\n` +
       `⚙️ <b>Field:</b> <code>${action.key}</code>\n` +
       `📝 <b>New Value:</b> <b>${escapeHtml(String(cleanVal))}</b>`,
       {
@@ -854,6 +996,92 @@ async function handleAdminTextInput(bot, ctx, text) {
         ...Markup.inlineKeyboard([[Markup.button.callback("⚙️ Back to Settings", "adm:settings")]])
       }
     );
+    return true;
+  }
+
+  if (action.type === "edit_product_price") {
+    const num = parseFloat(text.replace(/[^0-9.]/g, ""));
+    if (isNaN(num) || num <= 0) {
+      await ctx.reply("❌ Invalid price.");
+      return true;
+    }
+    const p = getProduct(action.productId);
+    if (!p) return true;
+    const bulkPrice = Number((num * 0.9).toFixed(2));
+    const updated = updateProduct(p.id, {
+      price: Number(num.toFixed(2)),
+      bulk_tiers: [
+        { min: 1, max: 4, price: Number(num.toFixed(2)) },
+        { min: 5, max: 999999, price: bulkPrice }
+      ]
+    });
+    await ctx.reply(
+      `✅ Updated price for <b>${escapeHtml(updated.name)}</b> to <b>${money(updated.price)}</b> (Bulk 5+: ${money(bulkPrice)}).`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([[Markup.button.callback("🔙 Back to Product", `adm_prod:${p.id}`)]])
+      }
+    );
+    return true;
+  }
+
+  if (action.type === "edit_product_stock") {
+    const num = parseInt(text.replace(/[^0-9]/g, ""), 10);
+    if (isNaN(num) || num < 0) {
+      await ctx.reply("❌ Invalid stock number.");
+      return true;
+    }
+    const updated = updateProduct(action.productId, { stock: num, outOfStock: num <= 0 });
+    await ctx.reply(
+      `✅ Updated stock for <b>${escapeHtml(updated.name)}</b> to <b>${updated.stock} units</b>.`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([[Markup.button.callback("🔙 Back to Product", `adm_prod:${updated.id}`)]])
+      }
+    );
+    return true;
+  }
+
+  if (action.type === "add_product_keys") {
+    const lines = text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    if (lines.length === 0) {
+      await ctx.reply("❌ No valid lines provided.");
+      return true;
+    }
+    const res = addProductStockItems(action.productId, lines);
+    await ctx.reply(
+      `✅ Added <b>${res.added}</b> preloaded item(s)! Total Stock is now <b>${res.totalStock} units</b>.`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([[Markup.button.callback("🔙 Back to Product", `adm_prod:${action.productId}`)]])
+      }
+    );
+    return true;
+  }
+
+  if (action.type === "fulfill_order") {
+    try {
+      const ord = fulfillOrder(action.orderId, text);
+      await bot.telegram.sendMessage(
+        ord.user_id,
+        `🎉 <b>YOUR ORDER HAS BEEN DELIVERED!</b>\n` +
+        `━━━━━━━━━━━━━━━━━━━━\n` +
+        `🆔 <b>Order Code:</b> <code>${ord.id}</code>\n` +
+        `📦 <b>Product:</b> <b>${escapeHtml(ord.product_name)}</b> (${ord.quantity}x)\n` +
+        `━━━━━━━━━━━━━━━━━━━━\n` +
+        `🔑 <b>Account Credentials / API Key:</b>\n` +
+        `<pre><code>${escapeHtml(text)}</code></pre>\n` +
+        `━━━━━━━━━━━━━━━━━━━━\n` +
+        `<i>Thank you for shopping with us!</i>`,
+        { parse_mode: "HTML" }
+      );
+      await ctx.reply(`✅ Credentials delivered to buyer for order <code>${ord.id}</code>!`, {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([[Markup.button.callback("🛒 Back to Orders", "adm:orders")]])
+      });
+    } catch (err) {
+      await ctx.reply(`❌ Failed to fulfill order: ${err.message}`);
+    }
     return true;
   }
 
@@ -877,25 +1105,10 @@ async function handleAdminTextInput(bot, ctx, text) {
       const dep = rejectDeposit(action.depositId, text);
       bot.telegram.sendMessage(
         dep.user_id,
-        `❌ <b>Deposit Rejected</b>\nReason: ${escapeHtml(text)}\nPlease contact Support if you believe this is an error.`,
+        `❌ <b>Deposit Rejected</b>\nReason: ${escapeHtml(text)}\nPlease contact Support if you need assistance.`,
         { parse_mode: "HTML" }
       ).catch(() => {});
       await ctx.reply(`❌ Deposit <code>${dep.id}</code> rejected.`);
-    } catch (err) {
-      await ctx.reply(`Error: ${err.message}`);
-    }
-    return true;
-  }
-
-  if (action.type === "reject_withdraw") {
-    try {
-      const { withdrawal } = rejectWithdrawal(action.withdrawId, text);
-      bot.telegram.sendMessage(
-        withdrawal.user_id,
-        `⚠️ <b>Withdrawal Rejected</b>\nAmount: ${money(withdrawal.amount)}\nReason: ${escapeHtml(text)}\n\nYour balance has been refunded to your wallet.`,
-        { parse_mode: "HTML" }
-      ).catch(() => {});
-      await ctx.reply(`❌ Withdrawal <code>${withdrawal.id}</code> rejected and balance refunded.`);
     } catch (err) {
       await ctx.reply(`Error: ${err.message}`);
     }
@@ -909,10 +1122,7 @@ async function handleAdminTextInput(bot, ctx, text) {
     if (!target) {
       await ctx.reply(`❌ No user found matching: <code>${escapeHtml(text)}</code>`, {
         parse_mode: "HTML",
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback("👥 View Users List", "adm:users")],
-          [Markup.button.callback("🔙 Back to Dashboard", "adm:menu")]
-        ])
+        ...Markup.inlineKeyboard([[Markup.button.callback("🔙 Back to Dashboard", "adm:menu")]])
       });
       return true;
     }
@@ -925,15 +1135,15 @@ async function handleAdminTextInput(bot, ctx, text) {
     const targetId = text.trim();
     const targetUser = getUser(targetId);
     if (!targetUser) {
-      await ctx.reply(`❌ No user found with ID: <code>${escapeHtml(targetId)}</code>.\nMake sure the user has started the bot at least once.`, {
+      await ctx.reply(`❌ No user found with ID: <code>${escapeHtml(targetId)}</code>.`, {
         parse_mode: "HTML",
         ...Markup.inlineKeyboard([[Markup.button.callback("🔙 Back to Dashboard", "adm:menu")]])
       });
       return true;
     }
     ctx.session.adminAction = { type: "dm_enter_message", targetUserId: targetId };
-    const name = [targetUser.first_name, targetUser.last_name].filter(Boolean).join(" ") || "Community Member";
-    await ctx.reply(`👤 <b>Recipient Selected:</b> ${escapeHtml(name)} (<code>${targetId}</code>)\n\nNow send the <b>message text</b> you want to deliver to this user:\n\n<i>Type /cancel to cancel.</i>`, {
+    const name = [targetUser.first_name, targetUser.last_name].filter(Boolean).join(" ") || "Buyer";
+    await ctx.reply(`👤 <b>Recipient:</b> ${escapeHtml(name)} (<code>${targetId}</code>)\n\nSend the message text to deliver:\n\n<i>Type /cancel to cancel.</i>`, {
       parse_mode: "HTML"
     });
     return true;
@@ -941,42 +1151,34 @@ async function handleAdminTextInput(bot, ctx, text) {
 
   if (action.type === "dm_enter_message") {
     const targetId = action.targetUserId;
-    const targetUser = getUser(targetId);
-    const name = targetUser ? ([targetUser.first_name, targetUser.last_name].filter(Boolean).join(" ") || "User") : "User";
     try {
       await bot.telegram.sendMessage(
         targetId,
-        `<blockquote>📩 <b>MESSAGE FROM ADMIN SUPPORT</b>\n` +
+        `<blockquote>📩 <b>MESSAGE FROM STORE ADMIN</b>\n` +
         `━━━━━━━━━━━━━━━━━━━━\n` +
         `${escapeHtml(text)}\n` +
         `━━━━━━━━━━━━━━━━━━━━\n` +
-        `<i>Tap the button below to reply directly to Admin Support.</i></blockquote>`,
+        `<i>Tap below to reply directly to Admin Support.</i></blockquote>`,
         {
           parse_mode: "HTML",
           ...Markup.inlineKeyboard([[Markup.button.callback("💬 Reply to Admin", "user_reply_admin")]])
         }
       );
-      await ctx.reply(`✅ <b>Message delivered successfully</b> to ${escapeHtml(name)} (<code>${targetId}</code>).`, {
+      await ctx.reply(`✅ Message delivered to <code>${targetId}</code>.`, {
         parse_mode: "HTML",
         ...Markup.inlineKeyboard([[Markup.button.callback("🔙 Back to Dashboard", "adm:menu")]])
       });
     } catch (err) {
-      await ctx.reply(`❌ <b>Failed to deliver message:</b> ${escapeHtml(err.message)}`, {
-        parse_mode: "HTML",
-        ...Markup.inlineKeyboard([[Markup.button.callback("🔙 Back to Dashboard", "adm:menu")]])
-      });
+      await ctx.reply(`❌ Failed to deliver message: ${escapeHtml(err.message)}`);
     }
     return true;
   }
 
   if (action.type === "adjust_balance") {
     const targetId = action.targetUserId;
-    const cleanNum = text.replace("+", "").trim();
-    const delta = parseFloat(cleanNum);
+    const delta = parseFloat(text.replace("+", "").trim());
     if (isNaN(delta)) {
-      await ctx.reply("❌ Invalid number. Please enter an amount like <code>+5.00</code> or <code>-2.00</code>.", {
-        parse_mode: "HTML"
-      });
+      await ctx.reply("❌ Invalid number. Enter e.g. <code>+45</code> or <code>-15</code>.", { parse_mode: "HTML" });
       return true;
     }
     const newBal = adjustUserBalance(targetId, delta);
@@ -985,19 +1187,16 @@ async function handleAdminTextInput(bot, ctx, text) {
       return true;
     }
 
-    // Notify user
     bot.telegram.sendMessage(
       targetId,
-      `<blockquote>💰 <b>WALLET BALANCE ADJUSTMENT</b>\n` +
+      `<blockquote>💰 <b>WALLET BALANCE UPDATED</b>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `💵 <b>Adjustment:</b> <b>${delta >= 0 ? "+" : ""}${money(delta)}</b>\n` +
-      `👛 <b>New Balance:</b> <b>${money(newBal)}</b>\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `<i>Your wallet balance was updated by Administration.</i></blockquote>`,
+      `👛 <b>New Balance:</b> <b>${money(newBal)}</b></blockquote>`,
       { parse_mode: "HTML" }
     ).catch(() => {});
 
-    await ctx.reply(`✅ <b>Balance updated for user <code>${targetId}</code>!</b>\nNew Balance: <b>${money(newBal)}</b>`, {
+    await ctx.reply(`✅ Balance updated for <code>${targetId}</code>! New Balance: <b>${money(newBal)}</b>`, {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
         [Markup.button.callback("👤 View User Profile", `adm_view_user:${targetId}`)],
@@ -1009,50 +1208,23 @@ async function handleAdminTextInput(bot, ctx, text) {
 
   if (action.type === "adjust_referrals") {
     const targetId = action.targetUserId;
-    const cleanNum = text.replace("+", "").trim();
-    const delta = parseInt(cleanNum, 10);
-    if (isNaN(delta) || delta === 0) {
-      await ctx.reply("❌ Invalid number. Please enter a number like <code>+3</code>, <code>+4</code>, or <code>-1</code>.", {
-        parse_mode: "HTML"
-      });
+    const delta = parseInt(text.replace("+", "").trim(), 10);
+    if (isNaN(delta)) {
+      await ctx.reply("❌ Invalid number. Enter e.g. <code>+30</code> or <code>-5</code>.", { parse_mode: "HTML" });
       return true;
     }
-
-    const syncBalance = delta > 0;
-    const result = adjustUserReferrals(targetId, delta, syncBalance);
-    if (!result) {
+    const newRefCount = adjustUserReferrals(targetId, delta);
+    if (newRefCount === false) {
       await ctx.reply(`❌ User <code>${targetId}</code> not found.`);
       return true;
     }
-
-    const bonusNotice = syncBalance ? ` (+$${(delta * 2.5).toFixed(2)} USDT bonus added)` : "";
-
-    // Notify user
-    bot.telegram.sendMessage(
-      targetId,
-      `<blockquote>👥 <b>REFERRAL STATUS UPDATED!</b>\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `📊 <b>Adjustment:</b> <b>${delta >= 0 ? "+" : ""}${delta} Referrals</b>${bonusNotice}\n` +
-      `👥 <b>New Total:</b> <b>${result.newCount} members</b>\n` +
-      `👛 <b>Wallet Balance:</b> <b>${money(result.newBalance)}</b>\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `<i>Your referral statistics were updated by Administration.</i></blockquote>`,
-      { parse_mode: "HTML" }
-    ).catch(() => {});
-
-    await ctx.reply(
-      `✅ <b>Referrals updated for user <code>${targetId}</code>!</b>\n` +
-      `• Adjustment: <b>${delta >= 0 ? "+" : ""}${delta}</b>${bonusNotice}\n` +
-      `• New Referral Count: <b>${result.newCount} members</b>\n` +
-      `• New Balance: <b>${money(result.newBalance)}</b>`,
-      {
-        parse_mode: "HTML",
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback("👤 View User Profile", `adm_view_user:${targetId}`)],
-          [Markup.button.callback("🔙 Dashboard", "adm:menu")]
-        ])
-      }
-    );
+    await ctx.reply(`✅ Referrals updated for <code>${targetId}</code>! New Referral Count: <b>${newRefCount}</b>`, {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback("👤 View User Profile", `adm_view_user:${targetId}`)],
+        [Markup.button.callback("🔙 Dashboard", "adm:menu")]
+      ])
+    });
     return true;
   }
 
@@ -1064,4 +1236,3 @@ module.exports = {
   registerAdminHandlers,
   handleAdminTextInput
 };
-
