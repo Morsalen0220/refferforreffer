@@ -45,6 +45,28 @@ const CATEGORY_LABELS = {
   all: "📋 All Available Products"
 };
 
+// Fast helper to answer callback immediately and edit message in-place without hanging
+async function renderScreen(ctx, text, kb) {
+  if (ctx.callbackQuery) {
+    ctx.answerCbQuery().catch(() => {});
+    const msg = ctx.callbackQuery.message;
+    // If previous message was a photo (no .text), delete it and send text cleanly
+    if (msg && !msg.text) {
+      try {
+        await ctx.deleteMessage();
+      } catch (e) {}
+      return await ctx.reply(text, { parse_mode: "HTML", ...kb });
+    }
+    try {
+      return await ctx.editMessageText(text, { parse_mode: "HTML", ...kb });
+    } catch (e) {
+      if (String(e.message || "").includes("message is not modified")) return;
+      return await ctx.reply(text, { parse_mode: "HTML", ...kb });
+    }
+  }
+  return await ctx.reply(text, { parse_mode: "HTML", ...kb });
+}
+
 // =====================================================
 // MENU: STORE CATEGORIES & PRODUCT CATALOG
 // =====================================================
@@ -79,14 +101,7 @@ async function showStoreMenu(ctx, selectedCat = null) {
       [Markup.button.callback("👛 My Wallet / Deposit", "menu_wallet"), Markup.button.callback("📦 My Orders", "menu_orders")]
     ]);
 
-    if (ctx.callbackQuery) {
-      try {
-        return await ctx.editMessageText(text, { parse_mode: "HTML", ...kb });
-      } catch (e) {
-        return await ctx.reply(text, { parse_mode: "HTML", ...kb });
-      }
-    }
-    return await ctx.reply(text, { parse_mode: "HTML", ...kb });
+    return renderScreen(ctx, text, kb);
   }
 
   let products = [];
@@ -122,15 +137,7 @@ async function showStoreMenu(ctx, selectedCat = null) {
   ]);
 
   const kb = Markup.inlineKeyboard(buttons);
-
-  if (ctx.callbackQuery) {
-    try {
-      return await ctx.editMessageText(text, { parse_mode: "HTML", ...kb });
-    } catch (e) {
-      return await ctx.reply(text, { parse_mode: "HTML", ...kb });
-    }
-  }
-  return await ctx.reply(text, { parse_mode: "HTML", ...kb });
+  return renderScreen(ctx, text, kb);
 }
 
 // =====================================================
@@ -373,14 +380,7 @@ async function showWalletScreen(ctx) {
     [Markup.button.callback("🛍️ Browse Products", "menu_store"), Markup.button.callback("📦 My Orders", "menu_orders")]
   ]);
 
-  if (ctx.callbackQuery) {
-    try {
-      return await ctx.editMessageText(text, { parse_mode: "HTML", ...kb });
-    } catch (e) {
-      return await ctx.reply(text, { parse_mode: "HTML", ...kb });
-    }
-  }
-  return await ctx.reply(text, { parse_mode: "HTML", ...kb });
+  return renderScreen(ctx, text, kb);
 }
 
 async function showDepositMethodSelector(ctx, amount) {
@@ -408,15 +408,7 @@ async function showDepositMethodSelector(ctx, amount) {
   );
 
   const kb = Markup.inlineKeyboard(methodButtons);
-
-  if (ctx.callbackQuery) {
-    try {
-      return await ctx.editMessageText(text, { parse_mode: "HTML", ...kb });
-    } catch (e) {
-      return await ctx.reply(text, { parse_mode: "HTML", ...kb });
-    }
-  }
-  return await ctx.reply(text, { parse_mode: "HTML", ...kb });
+  return renderScreen(ctx, text, kb);
 }
 
 // =====================================================
@@ -820,7 +812,7 @@ function registerUserHandlers(bot) {
     );
   });
 
-  bot.action(/^dep_method:([^:]+):([0-9.]+)$/, async (ctx) => {
+  bot.action(/^dep_method:([^:]+):(.+)$/, async (ctx) => {
     const method = ctx.match[1];
     const actAmount = parseFloat(ctx.match[2]) || 15.00;
     const settings = getAllSettings();
@@ -831,7 +823,7 @@ function registerUserHandlers(bot) {
       });
     }
 
-    await ctx.answerCbQuery();
+    ctx.answerCbQuery().catch(() => {});
 
     if (method === "BINANCE_PAY") {
       const payId = settings.binance_pay_id || "350946509";
@@ -852,11 +844,7 @@ function registerUserHandlers(bot) {
         [Markup.button.callback("🔙 Back", `dep_quick:${actAmount.toFixed(2)}`)]
       ]);
 
-      try {
-        await ctx.editMessageText(text, { parse_mode: "HTML", ...kb });
-      } catch (e) {
-        await ctx.reply(text, { parse_mode: "HTML", ...kb });
-      }
+      return renderScreen(ctx, text, kb);
     } else if (method === "LTC_COIN") {
       const ltcAddress = settings.ltc_address || "ltc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh";
       const text =
@@ -864,28 +852,17 @@ function registerUserHandlers(bot) {
         `━━━━━━━━━━━━━━━━━━━━\n` +
         `💵 <b>Amount to Send:</b> <b>$${actAmount.toFixed(2)} USD worth of LTC</b>\n` +
         `🌐 <b>Network:</b> <b>Litecoin (LTC Native Network)</b>\n` +
-        `📫 <b>LTC Deposit Address:</b>\n<code>${ltcAddress}</code> (Tap to copy)\n\n` +
+        `📫 <b>LTC Deposit Address (Tap to copy):</b>\n<code>${ltcAddress}</code>\n\n` +
         `⚠️ <i>Send Litecoin (LTC) worth <b>$${actAmount.toFixed(2)} USD</b> on the official Litecoin network.</i>\n\n` +
         `👇 <i>After sending payment, tap "✅ I Have Paid" below to submit your LTC TxID or receipt:</i>`;
 
       const kb = Markup.inlineKeyboard([
         [Markup.button.callback("✅ I Have Paid / Submit Proof", `dep_submit:LTC_COIN:${actAmount.toFixed(2)}`)],
+        [Markup.button.callback("📱 Show QR Code", `dep_qr:LTC_COIN:${actAmount.toFixed(2)}`)],
         [Markup.button.callback("🔙 Back", `dep_quick:${actAmount.toFixed(2)}`)]
       ]);
 
-      try {
-        const qrBuffer = await QRCode.toBuffer(ltcAddress, { width: 350, margin: 2 });
-        await ctx.replyWithPhoto(
-          { source: qrBuffer },
-          {
-            caption: text,
-            parse_mode: "HTML",
-            ...kb
-          }
-        );
-      } catch (e) {
-        await ctx.reply(text, { parse_mode: "HTML", ...kb });
-      }
+      return renderScreen(ctx, text, kb);
     } else {
       const isBep20 = method === "USDT_BEP20";
       const address = isBep20
@@ -898,32 +875,54 @@ function registerUserHandlers(bot) {
         `━━━━━━━━━━━━━━━━━━━━\n` +
         `💵 <b>Amount to Send:</b> <b>${money(actAmount)}</b>\n` +
         `🌐 <b>Network:</b> <b>${networkName}</b>\n` +
-        `📫 <b>Deposit Address:</b>\n<code>${address}</code> (Tap to copy)\n\n` +
+        `📫 <b>Deposit Address (Tap to copy):</b>\n<code>${address}</code>\n\n` +
         `⚠️ <i>Send only USDT on ${networkName}.</i>\n\n` +
         `👇 <i>After sending payment, tap "✅ I Have Paid" below to submit your TxID or receipt:</i>`;
 
       const kb = Markup.inlineKeyboard([
         [Markup.button.callback("✅ I Have Paid / Submit Proof", `dep_submit:${method}:${actAmount.toFixed(2)}`)],
+        [Markup.button.callback("📱 Show QR Code", `dep_qr:${method}:${actAmount.toFixed(2)}`)],
         [Markup.button.callback("🔙 Back", `dep_quick:${actAmount.toFixed(2)}`)]
       ]);
 
-      try {
-        const qrBuffer = await QRCode.toBuffer(address, { width: 350, margin: 2 });
-        await ctx.replyWithPhoto(
-          { source: qrBuffer },
-          {
-            caption: text,
-            parse_mode: "HTML",
-            ...kb
-          }
-        );
-      } catch (e) {
-        await ctx.reply(text, { parse_mode: "HTML", ...kb });
-      }
+      return renderScreen(ctx, text, kb);
     }
   });
 
-  bot.action(/^dep_submit:([^:]+):([0-9.]+)$/, async (ctx) => {
+  bot.action(/^dep_qr:([^:]+):(.+)$/, async (ctx) => {
+    const method = ctx.match[1];
+    const actAmount = parseFloat(ctx.match[2]) || 15.00;
+    const settings = getAllSettings();
+    ctx.answerCbQuery("Generating QR Code...").catch(() => {});
+
+    const address =
+      method === "LTC_COIN"
+        ? settings.ltc_address || "ltc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
+        : method === "USDT_BEP20"
+        ? settings.bep20_usdt_address || "0xC3fC8C91A5B26C71DcD0aC1F34944FB298bCeBbF"
+        : settings.polygon_usdt_address || "0xC3fC8C91A5B26C71DcD0aC1F34944FB298bCeBbF";
+
+    const label =
+      method === "LTC_COIN" ? "Litecoin (LTC)" : method === "USDT_BEP20" ? "USDT (BEP-20)" : "USDT (Polygon)";
+
+    try {
+      const qrBuffer = await QRCode.toBuffer(address, { width: 320, margin: 2 });
+      await ctx.replyWithPhoto(
+        { source: qrBuffer },
+        {
+          caption: `📱 <b>${label} QR Code (${money(actAmount)})</b>\n<code>${address}</code>`,
+          parse_mode: "HTML",
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback("✅ I Have Paid / Submit Proof", `dep_submit:${method}:${actAmount.toFixed(2)}`)]
+          ])
+        }
+      );
+    } catch (e) {
+      await ctx.reply(`📫 <b>${label} Address:</b>\n<code>${address}</code>`, { parse_mode: "HTML" });
+    }
+  });
+
+  bot.action(/^dep_submit:([^:]+):(.+)$/, async (ctx) => {
     const method = ctx.match[1];
     const amount = parseFloat(ctx.match[2]) || 15.00;
     ctx.session.depositState = {
@@ -931,13 +930,18 @@ function registerUserHandlers(bot) {
       amount,
       step: "awaiting_proof"
     };
-    await ctx.answerCbQuery();
-    await ctx.reply(
-      `📝 <b>Submit Deposit Proof (${money(amount)}):</b>\n\n` +
-      `Please reply with your payment <b>Transaction ID (TxID)</b>, <b>Binance Order ID</b>, or send a <b>Screenshot image</b> of your transfer receipt.\n\n` +
-      `<i>Type /cancel to cancel.</i>`,
-      { parse_mode: "HTML" }
-    );
+    const text =
+      `📝 <b>SUBMIT DEPOSIT PROOF (${money(amount)})</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `🌐 <b>Selected Method:</b> <b>${escapeHtml(method)}</b>\n\n` +
+      `👇 Please reply with your payment <b>Transaction ID (TxID)</b>, <b>Binance Order ID</b>, or send a <b>Screenshot image</b> of your transfer receipt.\n\n` +
+      `<i>Type /cancel to cancel.</i>`;
+
+    const kb = Markup.inlineKeyboard([
+      [Markup.button.callback("🔙 Back to Payment Details", `dep_method:${method}:${amount.toFixed(2)}`)]
+    ]);
+
+    return renderScreen(ctx, text, kb);
   });
 
   // Orders & Order Recovery
