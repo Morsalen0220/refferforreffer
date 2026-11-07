@@ -1,5 +1,13 @@
 const { Markup } = require("telegraf");
-const { getAllSettings, getAllProducts, getUnitPrice } = require("./store");
+const {
+  getAllSettings,
+  getAllProducts,
+  getProduct,
+  getUnitPrice,
+  updateProduct,
+  getRandomRestockQuantity,
+  deductProductStockAndAutoRestock
+} = require("./store");
 const { getRandomCustomerName } = require("./names");
 const { getRealCryptoTransactionProof } = require("./realTransactions");
 const { money, escapeHtml, getBotUsername } = require("./helpers");
@@ -71,13 +79,43 @@ async function sendGroupDepositNotice(customerName, amount = 45.00, methodLabel 
   return sendToGroupOnly(msg, keyboard);
 }
 
-// 2. Realtime Product Order Completed Notice (Uses exact product price & bulk tiers + clickable TxID)
-async function sendGroupOrderNotice(customerName, productName = "Claude Max 20x (Finished Account)", quantity = 1, totalAmount = 45.00, unitPrice = null) {
+// 2. Realtime Product Order Completed Notice (Auto deducts stock & auto restocks >60 when 0)
+async function sendGroupOrderNotice(
+  customerName,
+  productName = "Claude Max 20x (Finished Account)",
+  quantity = 1,
+  totalAmount = 45.00,
+  unitPrice = null,
+  deductFromStore = true
+) {
   const settings = getAllSettings();
   const txProof = getRealCryptoTransactionProof(settings.binance_pay_enabled !== false);
   const botUsername = await getBotUsername(botInstance);
   const timeStr = new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
   const calcUnit = unitPrice !== null ? Number(unitPrice) : Number((Number(totalAmount) / Math.max(1, quantity)).toFixed(2));
+
+  let stockResult = null;
+  if (deductFromStore) {
+    stockResult = deductProductStockAndAutoRestock(productName, quantity);
+  } else {
+    const existingProd = getAllProducts().find((p) => p.id === productName || p.name === productName);
+    if (existingProd) {
+      stockResult = {
+        product: existingProd,
+        remainingBeforeRestock: existingProd.stock,
+        autoRestocked: false,
+        restockedAmount: 0
+      };
+    }
+  }
+
+  const remainingLine = stockResult
+    ? `📊 <b>Remaining Stock:</b> <b>${
+        stockResult.autoRestocked
+          ? `0 Left (Sold Out ➔ Auto-Restocking!)`
+          : `${stockResult.remainingBeforeRestock} Units Left`
+      }</b>\n`
+    : "";
 
   const msg =
     `<blockquote>🛍️ <b>NEW ORDER DELIVERED</b>\n` +
@@ -87,6 +125,7 @@ async function sendGroupOrderNotice(customerName, productName = "Claude Max 20x 
     `🏷️ <b>Unit Price:</b> <b>${money(calcUnit)}</b>${quantity >= 5 ? " <i>(Bulk Rate)</i>" : ""}\n` +
     `🔢 <b>Quantity:</b> <b>${quantity}x Unit(s)</b>\n` +
     `💵 <b>Total Paid:</b> <b>${money(totalAmount)}</b>\n` +
+    remainingLine +
     `🌐 <b>Payment:</b> ${txProof.gatewayIcon} <b>${txProof.methodLabel}</b>\n` +
     `🔗 <b>TxID:</b> <a href="${txProof.txUrl}">${txProof.txId}</a>\n` +
     `🕒 <b>Time:</b> <code>${timeStr}</code>\n` +
@@ -95,7 +134,18 @@ async function sendGroupOrderNotice(customerName, productName = "Claude Max 20x 
     `🚀 <i>Claude Max 20x • ChatGPT Pro • GCP $300 • Azure PAYG • AWS 5v in stock!</i></blockquote>`;
 
   const keyboard = Markup.inlineKeyboard([[Markup.button.url("🛒 Buy Instantly in Bot", `https://t.me/${botUsername}`)]]);
-  return sendToGroupOnly(msg, keyboard);
+  const sendRes = await sendToGroupOnly(msg, keyboard);
+
+  // If stock hit 0 during this sell post, announce the new >60 auto-restocked batch!
+  if (stockResult && stockResult.autoRestocked && stockResult.product) {
+    const prod = stockResult.product;
+    const bulkUnit = getUnitPrice(prod, 5);
+    setTimeout(() => {
+      sendGroupRestockNotice(prod.name, stockResult.restockedAmount, prod.price, bulkUnit).catch(() => {});
+    }, 3500);
+  }
+
+  return sendRes;
 }
 
 // 3. Stock Restock Notice (Uses exact product price & bulk tier price)
@@ -173,13 +223,13 @@ function scheduleNextGroupBroadcast(isFirstRun = false) {
             const exactTotalPrice = Number((exactUnitPrice * qty).toFixed(2));
 
             let res = { success: false };
-            if (roll < 0.68) {
-              res = await sendGroupOrderNotice(name, prod.name, qty, exactTotalPrice, exactUnitPrice);
-            } else if (roll < 0.90) {
+            if (roll < 0.72) {
+              res = await sendGroupOrderNotice(name, prod.name, qty, exactTotalPrice, exactUnitPrice, true);
+            } else if (roll < 0.92) {
               res = await sendGroupDepositNotice(name, exactTotalPrice, null, `${prod.name}${qty > 1 ? ` (${qty}x)` : ""}`);
             } else {
-              const batchCounts = [10, 15, 20, 25, 30, 50];
-              const batch = batchCounts[Math.floor(Math.random() * batchCounts.length)];
+              const batch = getRandomRestockQuantity(); // Strictly > 60 (61 to 120 units)
+              updateProduct(prod.id, { stock: batch, outOfStock: false });
               const bulkUnit = getUnitPrice(prod, 5);
               res = await sendGroupRestockNotice(prod.name, batch, prod.price, bulkUnit);
             }

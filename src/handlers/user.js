@@ -323,7 +323,14 @@ async function handlePurchase(bot, ctx, productId, quantity) {
     // Broadcast live purchase to group
     const settings = getAllSettings();
     if (settings.group_id) {
-      sendGroupOrderNotice(user.first_name || "Verified Buyer", order.product_name, order.quantity, order.total_price).catch(() => {});
+      sendGroupOrderNotice(
+        user.first_name || "Verified Buyer",
+        order.product_name,
+        order.quantity,
+        order.total_price,
+        order.unit_price,
+        false
+      ).catch(() => {});
     }
   } catch (err) {
     if (ctx.callbackQuery) {
@@ -599,7 +606,7 @@ function registerUserHandlers(bot) {
     const userId = ctx.from?.id;
     if (!userId) return;
 
-    const { ok, channelOk, groupOk } = await verifyLiveMembership(bot, ctx, userId);
+    const { ok, channelOk, groupOk } = await verifyLiveMembership(bot, ctx, userId, true);
     if (!ok) {
       if (!channelOk && !groupOk) {
         return ctx.answerCbQuery("❌ Please join both our Channel & Group first!", { show_alert: true });

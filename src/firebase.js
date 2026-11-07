@@ -4,17 +4,17 @@ const fs = require("fs");
 
 let dbInstance = null;
 let isInitialized = false;
+let cachedAccount = undefined;
+let lastLocalSaveTime = 0;
 
 function parseServiceAccount() {
-  let account = null;
+  if (cachedAccount !== undefined) return cachedAccount;
 
-  // 1. Check Environment Variable (FIREBASE_SERVICE_ACCOUNT or FIREBASE_CONFIG_BASE64)
+  let account = null;
   const envVal = process.env.FIREBASE_SERVICE_ACCOUNT || process.env.FIREBASE_CONFIG_BASE64;
-  
+
   if (envVal) {
     let raw = envVal.trim();
-    
-    // যদি শুরুতে বা শেষে ভুলবশত অতিরিক্ত কোটেশন (" বা ') চলে আসে, তা রিমুভ করা
     if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
       raw = raw.slice(1, -1).trim();
     }
@@ -27,7 +27,6 @@ function parseServiceAccount() {
         account = JSON.parse(raw);
         console.log("✅ Loaded Firebase credentials from ENV (JSON format)");
       } catch (e) {
-        // যদি আসল newline থাকার কারণে JSON.parse ফেইল করে, তা ঠিক করে আবার চেষ্টা করা
         try {
           const fixedRaw = raw.replace(/\r?\n/g, "\\n");
           account = JSON.parse(fixedRaw);
@@ -37,7 +36,6 @@ function parseServiceAccount() {
         }
       }
     } else {
-      // Base64 ডিকোড করার চেষ্টা
       try {
         const decoded = Buffer.from(raw, "base64").toString("utf8");
         account = JSON.parse(decoded);
@@ -48,7 +46,6 @@ function parseServiceAccount() {
     }
   }
 
-  // 2. Fallback to Local File (শুধুমাত্র লোকাল পিসির জন্য)
   if (!account) {
     const keyPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH || "./serviceAccountKey.json";
     if (fs.existsSync(keyPath)) {
@@ -61,18 +58,19 @@ function parseServiceAccount() {
     }
   }
 
-  // 3. CRITICAL: Normalize private_key newlines & accidental quotes
   if (account && typeof account.private_key === "string") {
     account.private_key = account.private_key
-      .replace(/^["']|["']$/g, "") // শুরু বা শেষের ভুল কোটেশন সরানো
-      .replace(/\\n/g, "\n");      // টেক্সট \n কে আসল লাইন ব্রেকে রূপান্তর
+      .replace(/^["']|["']$/g, "")
+      .replace(/\\n/g, "\n");
   }
 
-  return account;
+  cachedAccount = account || null;
+  return cachedAccount;
 }
 
 function isFirebaseConfigured() {
   const dbUrl = process.env.FIREBASE_DATABASE_URL;
+  if (!dbUrl) return false;
   const serviceAccount = parseServiceAccount();
   return Boolean(dbUrl && serviceAccount);
 }
@@ -84,12 +82,12 @@ function initFirebase() {
   const serviceAccount = parseServiceAccount();
 
   if (!dbUrl || !serviceAccount) {
-    console.log("ℹ️ Firebase credentials not provided. Using local storage (./data/bot-data.json).");
+    isInitialized = true;
+    console.log("ℹ️ Firebase credentials not provided. Using fast local storage (./data/bot-data.json).");
     return null;
   }
 
   try {
-    // কোন Key ID ও Email লোড হচ্ছে তা লগে দেখানো
     console.log(`🔑 Initializing Firebase with Key ID: ${serviceAccount.private_key_id} (${serviceAccount.client_email})`);
 
     const apps = admin.apps || (typeof admin.getApps === "function" ? admin.getApps() : []);
@@ -105,19 +103,23 @@ function initFirebase() {
     console.log("🔥 Connected to Google Firebase Realtime Database successfully!");
     return dbInstance;
   } catch (err) {
+    isInitialized = true;
     console.error("❌ Firebase initialization error:", err.message);
     return null;
   }
 }
 
-// Fetch all bot data from Firebase
+// Fetch all bot data from Firebase with a 6-second timeout so startup never hangs
 async function fetchFirebaseData() {
   const db = initFirebase();
   if (!db) return null;
 
   try {
-    const snapshot = await db.ref("botData").once("value");
-    if (snapshot.exists()) {
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("Firebase fetch timed out after 6s")), 6000)
+    );
+    const snapshot = await Promise.race([db.ref("botData").once("value"), timeoutPromise]);
+    if (snapshot && snapshot.exists()) {
       return snapshot.val();
     }
     return null;
@@ -127,7 +129,7 @@ async function fetchFirebaseData() {
   }
 }
 
-// Save all bot data to Firebase
+// Debounced non-blocking save to Firebase (1.5s debounce prevents spamming network on rapid clicks)
 let syncTimeout = null;
 function saveFirebaseData(data) {
   const db = initFirebase();
@@ -137,25 +139,32 @@ function saveFirebaseData(data) {
 
   syncTimeout = setTimeout(async () => {
     try {
+      lastLocalSaveTime = Date.now();
       await db.ref("botData").set(data);
     } catch (err) {
       console.error("Error saving to Firebase:", err.message);
     }
-  }, 200);
+  }, 1500);
 }
 
-// Listen to real-time changes made directly in Firebase Console
+// Listen to external changes in Firebase Console without echoing our own saves
 function listenFirebaseData(callback) {
   const db = initFirebase();
   if (!db || typeof callback !== "function") return;
 
-  db.ref("botData").on("value", (snapshot) => {
-    if (snapshot.exists()) {
-      callback(snapshot.val());
+  db.ref("botData").on(
+    "value",
+    (snapshot) => {
+      // Ignore echo triggered by our own save within the last 3 seconds
+      if (Date.now() - lastLocalSaveTime < 3000) return;
+      if (snapshot.exists()) {
+        callback(snapshot.val());
+      }
+    },
+    (err) => {
+      console.error("Firebase live listener error:", err.message);
     }
-  }, (err) => {
-    console.error("Firebase live listener error:", err.message);
-  });
+  );
 }
 
 module.exports = {

@@ -128,7 +128,7 @@ function fetchRpcTransactions(rpcUrl) {
         jsonrpc: "2.0",
         id: Date.now(),
         method: "eth_getBlockByNumber",
-        params: ["latest", true]
+        params: ["latest", false]
       });
       const url = new URL(rpcUrl);
       const req = https.request({
@@ -193,8 +193,9 @@ async function refreshRealTransactions() {
   }
 }
 
-// Start background refresh
-refreshRealTransactions();
+// Delay initial background refresh by 15s so startup is 100% instant
+const initRefreshTimer = setTimeout(refreshRealTransactions, 15 * 1000);
+if (initRefreshTimer.unref) initRefreshTimer.unref();
 const refreshTimer = setInterval(refreshRealTransactions, 10 * 60 * 1000);
 if (refreshTimer.unref) refreshTimer.unref();
 

@@ -34,8 +34,12 @@ async function getBotUsername(bot) {
   }
 }
 
-// Check if user has joined required channel/group via live Telegram API
-async function verifyLiveMembership(bot, ctx, userId) {
+// Fast 90-second cache for verified channel/group membership so every button tap is 0ms instant
+const membershipCache = new Map();
+const MEMBERSHIP_TTL_MS = 90 * 1000;
+
+// Check if user has joined required channel/group via live Telegram API (parallel + cached)
+async function verifyLiveMembership(bot, ctx, userId, forceRefresh = false) {
   const settings = getAllSettings();
   if (!settings.force_join_enabled) {
     return { ok: true, channelOk: true, groupOk: true };
@@ -45,35 +49,39 @@ async function verifyLiveMembership(bot, ctx, userId) {
     return { ok: true, channelOk: true, groupOk: true };
   }
 
+  const cacheKey = String(userId);
+  if (!forceRefresh && membershipCache.has(cacheKey)) {
+    const cached = membershipCache.get(cacheKey);
+    if (Date.now() - cached.ts < MEMBERSHIP_TTL_MS && cached.ok) {
+      return cached;
+    }
+  }
+
   const validStatuses = ["creator", "administrator", "member", "restricted"];
-  let channelOk = false;
-  let groupOk = false;
 
-  // 1. Channel
-  if (settings.channel_id) {
+  const checkSingleChat = async (chatId) => {
+    if (!chatId) return true;
     try {
-      const member = await bot.telegram.getChatMember(settings.channel_id, userId);
-      channelOk = validStatuses.includes(member?.status);
+      const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 3500));
+      const member = await Promise.race([bot.telegram.getChatMember(chatId, userId), timeout]);
+      return validStatuses.includes(member?.status);
     } catch (e) {
-      channelOk = false;
+      return false;
     }
-  } else {
-    channelOk = true;
-  }
+  };
 
-  // 2. Group
-  if (settings.group_id) {
-    try {
-      const member = await bot.telegram.getChatMember(settings.group_id, userId);
-      groupOk = validStatuses.includes(member?.status);
-    } catch (e) {
-      groupOk = false;
-    }
-  } else {
-    groupOk = true;
-  }
+  const [channelOk, groupOk] = await Promise.all([
+    checkSingleChat(settings.channel_id),
+    checkSingleChat(settings.group_id)
+  ]);
 
-  return { ok: channelOk && groupOk, channelOk, groupOk };
+  const result = { ok: channelOk && groupOk, channelOk, groupOk, ts: Date.now() };
+  if (result.ok) {
+    membershipCache.set(cacheKey, result);
+  } else {
+    membershipCache.delete(cacheKey);
+  }
+  return result;
 }
 
 async function checkMembership(bot, ctx) {
@@ -81,7 +89,7 @@ async function checkMembership(bot, ctx) {
   if (!settings.force_join_enabled) return true;
   const userId = ctx.from?.id;
   if (!userId) return true;
-  const { ok } = await verifyLiveMembership(bot, ctx, userId);
+  const { ok } = await verifyLiveMembership(bot, ctx, userId, false);
   return ok;
 }
 

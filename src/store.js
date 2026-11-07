@@ -390,6 +390,16 @@ function loadLocalFile() {
   }
 }
 
+let localWriteTimeout = null;
+function scheduleLocalFileWrite(db) {
+  if (localWriteTimeout) clearTimeout(localWriteTimeout);
+  localWriteTimeout = setTimeout(() => {
+    fs.promises.writeFile(file, JSON.stringify(db, null, 2), "utf8").catch((e) => {
+      console.error("Local file write error:", e.message);
+    });
+  }, 500);
+}
+
 async function initStore() {
   if (isFirebaseConfigured()) {
     try {
@@ -398,9 +408,7 @@ async function initStore() {
       if (remoteData && (remoteData.users || remoteData.settings || remoteData.products || remoteData.orders)) {
         console.log("📥 Loaded database snapshot from Google Firebase Realtime Database!");
         memoryDb = normalizeDb(remoteData);
-        try {
-          fs.writeFileSync(file, JSON.stringify(memoryDb, null, 2), "utf8");
-        } catch (e) {}
+        scheduleLocalFileWrite(memoryDb);
       } else {
         console.log("📤 Initializing Firebase Realtime Database with local database seed...");
         memoryDb = loadLocalFile();
@@ -410,9 +418,7 @@ async function initStore() {
       listenFirebaseData((remoteUpdated) => {
         if (remoteUpdated) {
           memoryDb = normalizeDb(remoteUpdated);
-          try {
-            fs.writeFileSync(file, JSON.stringify(memoryDb, null, 2), "utf8");
-          } catch (e) {}
+          scheduleLocalFileWrite(memoryDb);
         }
       });
       return memoryDb;
@@ -436,11 +442,7 @@ function load() {
 
 function save(db) {
   memoryDb = db;
-  try {
-    fs.writeFileSync(file, JSON.stringify(db, null, 2), "utf8");
-  } catch (e) {
-    console.error("Local file write error:", e.message);
-  }
+  scheduleLocalFileWrite(db);
   if (isFirebaseConfigured()) {
     saveFirebaseData(db);
   }
@@ -680,6 +682,50 @@ function addProduct(productData) {
   return newProd;
 }
 
+function getRandomRestockQuantity() {
+  // Random stock strictly above 60 (61 to 120 units)
+  return Math.floor(61 + Math.random() * 60);
+}
+
+function deductProductStockAndAutoRestock(productIdOrName, quantity = 1) {
+  const db = load();
+  const prod = db.products.find(
+    (p) => p.id === productIdOrName || p.name === productIdOrName
+  );
+  if (!prod) return null;
+
+  const qty = Math.max(1, parseInt(quantity, 10) || 1);
+  const prevStock = Math.max(0, Number(prod.stock || 0));
+  const remaining = Math.max(0, prevStock - qty);
+
+  if (remaining <= 0) {
+    const newStock = getRandomRestockQuantity();
+    prod.stock = newStock;
+    prod.outOfStock = false;
+    save(db);
+    return {
+      product: prod,
+      deducted: qty,
+      remainingBeforeRestock: 0,
+      autoRestocked: true,
+      restockedAmount: newStock,
+      currentStock: newStock
+    };
+  }
+
+  prod.stock = remaining;
+  prod.outOfStock = false;
+  save(db);
+  return {
+    product: prod,
+    deducted: qty,
+    remainingBeforeRestock: remaining,
+    autoRestocked: false,
+    restockedAmount: 0,
+    currentStock: remaining
+  };
+}
+
 function addProductStockItems(productId, itemsArray) {
   const db = load();
   const prod = db.products.find((p) => p.id === productId);
@@ -796,7 +842,12 @@ function createOrder({ user_id, product_id, quantity = 1 }) {
   user.orders_count = (user.orders_count || 0) + 1;
 
   product.stock = Math.max(0, (Number(product.stock) || 0) - qty);
-  product.outOfStock = product.stock <= 0;
+  if (product.stock <= 0) {
+    product.stock = getRandomRestockQuantity();
+    product.outOfStock = false;
+  } else {
+    product.outOfStock = false;
+  }
 
   // Check if pre-loaded credentials exist in stock_items
   const availableKeys = Array.isArray(db.stock_items[product_id]) ? db.stock_items[product_id] : [];
@@ -899,6 +950,8 @@ module.exports = {
   updateProduct,
   addProduct,
   addProductStockItems,
+  getRandomRestockQuantity,
+  deductProductStockAndAutoRestock,
   createDeposit,
   getDeposit,
   approveDeposit,
