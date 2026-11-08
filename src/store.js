@@ -308,8 +308,10 @@ const defaultSettings = {
   free_reward_title: "ChatGPT Shared Account (1 Month)",
   channel_id: process.env.FORCE_CHANNEL_ID || "-1004420926145",
   channel_link: process.env.FORCE_CHANNEL_LINK || "https://t.me/RefferRewardss",
+  channel_link_text: "Join Official Channel",
   group_id: process.env.FORCE_GROUP_ID || "-1004378930616",
   group_link: process.env.FORCE_GROUP_LINK || "https://t.me/RefferRewardes",
+  group_link_text: "Join Community Group",
   force_join_enabled: false,
   bep20_usdt_address: process.env.BEP20_USDT_ADDRESS || "0xC3fC8C91A5B26C71DcD0aC1F34944FB298bCeBbF",
   polygon_usdt_address: process.env.POLYGON_USDT_ADDRESS || "0xC3fC8C91A5B26C71DcD0aC1F34944FB298bCeBbF",
@@ -338,6 +340,18 @@ function normalizeDb(raw) {
     raw.settings = structuredClone(defaultSettings);
   } else {
     raw.settings = { ...defaultSettings, ...raw.settings };
+    if (process.env.FORCE_GROUP_ID && raw.settings.group_id === "-1004378930616") {
+      raw.settings.group_id = process.env.FORCE_GROUP_ID;
+    }
+    if (process.env.FORCE_GROUP_LINK && raw.settings.group_link === "https://t.me/RefferRewardes") {
+      raw.settings.group_link = process.env.FORCE_GROUP_LINK;
+    }
+    if (process.env.FORCE_CHANNEL_ID && raw.settings.channel_id === "-1004420926145") {
+      raw.settings.channel_id = process.env.FORCE_CHANNEL_ID;
+    }
+    if (process.env.FORCE_CHANNEL_LINK && raw.settings.channel_link === "https://t.me/RefferRewardss") {
+      raw.settings.channel_link = process.env.FORCE_CHANNEL_LINK;
+    }
   }
 
   // Ensure new AI/Cloud products are loaded if missing or outdated

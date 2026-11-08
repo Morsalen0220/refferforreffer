@@ -21,6 +21,62 @@ function adminOnly(ctx) {
   return true;
 }
 
+// Extract @username from a public t.me link or @handle (ignores private +invite / joinchat links)
+function extractTelegramUsername(input) {
+  const raw = String(input || "").trim();
+  if (!raw) return null;
+
+  if (raw.startsWith("@") && raw.length > 2 && !raw.includes("/")) {
+    return raw;
+  }
+
+  const match = raw.match(/(?:https?:\/\/)?(?:www\.)?(?:t\.me|telegram\.me)\/([a-zA-Z0-9_]{4,64})\/?$/i);
+  if (match && match[1]) {
+    const handle = match[1];
+    const reserved = ["joinchat", "addstickers", "addlist", "share", "proxy", "socks", "iv"];
+    if (!reserved.includes(handle.toLowerCase())) {
+      return `@${handle}`;
+    }
+  }
+  return null;
+}
+
+// Build ordered list of candidate chat targets from configured ID and Link
+function getChatTargetCandidates(idVal, linkVal) {
+  const candidates = [];
+  const addCandidate = (val) => {
+    if (!val) return;
+    const str = String(val).trim();
+    if (str && !candidates.includes(str)) {
+      candidates.push(str);
+    }
+  };
+
+  const rawId = String(idVal || "").trim();
+  const fromIdHandle = extractTelegramUsername(rawId);
+  if (fromIdHandle) {
+    addCandidate(fromIdHandle);
+  } else if (rawId) {
+    addCandidate(rawId);
+    // If admin entered positive supergroup ID without -100 prefix, add -100 fallback
+    if (/^\d{8,15}$/.test(rawId)) {
+      if (rawId.startsWith("100") && rawId.length >= 12) {
+        addCandidate(`-${rawId}`);
+      } else {
+        addCandidate(`-100${rawId}`);
+        addCandidate(`-${rawId}`);
+      }
+    }
+  }
+
+  const fromLinkHandle = extractTelegramUsername(linkVal);
+  if (fromLinkHandle) {
+    addCandidate(fromLinkHandle);
+  }
+
+  return candidates;
+}
+
 // Cached bot username
 let cachedBotUsername = null;
 async function getBotUsername(bot) {
@@ -59,20 +115,27 @@ async function verifyLiveMembership(bot, ctx, userId, forceRefresh = false) {
 
   const validStatuses = ["creator", "administrator", "member", "restricted"];
 
-  const checkSingleChat = async (chatId) => {
-    if (!chatId) return true;
-    try {
-      const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 3500));
-      const member = await Promise.race([bot.telegram.getChatMember(chatId, userId), timeout]);
-      return validStatuses.includes(member?.status);
-    } catch (e) {
-      return false;
+  const checkSingleChat = async (idVal, linkVal) => {
+    const candidates = getChatTargetCandidates(idVal, linkVal);
+    if (candidates.length === 0) return true;
+
+    for (const chatTarget of candidates) {
+      try {
+        const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 3500));
+        const member = await Promise.race([bot.telegram.getChatMember(chatTarget, userId), timeout]);
+        if (member && member.status) {
+          return validStatuses.includes(member.status);
+        }
+      } catch (e) {
+        // Try next candidate
+      }
     }
+    return false;
   };
 
   const [channelOk, groupOk] = await Promise.all([
-    checkSingleChat(settings.channel_id),
-    checkSingleChat(settings.group_id)
+    checkSingleChat(settings.channel_id, settings.channel_link),
+    checkSingleChat(settings.group_id, settings.group_link)
   ]);
 
   const result = { ok: channelOk && groupOk, channelOk, groupOk, ts: Date.now() };
@@ -189,6 +252,8 @@ module.exports = {
   escapeHtml,
   isAdmin,
   adminOnly,
+  extractTelegramUsername,
+  getChatTargetCandidates,
   getBotUsername,
   verifyLiveMembership,
   checkMembership,

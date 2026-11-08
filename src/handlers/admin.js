@@ -30,6 +30,8 @@ const {
   escapeHtml,
   adminOnly,
   isAdmin,
+  extractTelegramUsername,
+  getChatTargetCandidates,
   renderUserProfile,
   getBotUsername
 } = require("../helpers");
@@ -426,7 +428,7 @@ function registerAdminHandlers(bot) {
       ).catch(() => {});
 
       const settings = getAllSettings();
-      if (settings.group_id) {
+      if (settings.group_id || settings.group_link) {
         sendGroupDepositNotice(user?.first_name || "Verified Buyer", deposit.amount).catch(() => {});
       }
     } catch (err) {
@@ -458,8 +460,10 @@ function registerAdminHandlers(bot) {
       `🟢 <b>BEP20 USDT Address:</b> <code>${s.bep20_usdt_address?.slice(0, 12)}...</code>\n` +
       `🟣 <b>Polygon USDT Address:</b> <code>${s.polygon_usdt_address?.slice(0, 12)}...</code>\n` +
       `⚪️ <b>Litecoin (LTC) Address:</b> <code>${(s.ltc_address || "ltc1q...").slice(0, 14)}...</code>\n` +
-      `📢 <b>Channel:</b> ${s.channel_link}\n` +
-      `👥 <b>Group:</b> ${s.group_link}\n` +
+      `📢 <b>Channel ID:</b> <code>${escapeHtml(s.channel_id || "Not Set")}</code>\n` +
+      `📢 <b>Channel Link:</b> <a href="${escapeHtml(s.channel_link || "https://t.me/")}">${escapeHtml(s.channel_link_text || "Join Official Channel")}</a>\n` +
+      `👥 <b>Group ID:</b> <code>${escapeHtml(s.group_id || "Not Set")}</code>\n` +
+      `👥 <b>Group Link:</b> <a href="${escapeHtml(s.group_link || "https://t.me/")}">${escapeHtml(s.group_link_text || "Join Community Group")}</a>\n` +
       `📞 <b>Support Admin:</b> ${escapeHtml(s.support_username || "@Morsalen0220")}\n` +
       `🔒 <b>Force Join:</b> ${s.force_join_enabled ? "✅ ON" : "❌ OFF"}\n` +
       `📢 <b>Group Auto-Poster:</b> ${s.auto_broadcast_enabled !== false ? "✅ ON" : "❌ OFF"}\n` +
@@ -486,6 +490,10 @@ function registerAdminHandlers(bot) {
         Markup.button.callback("📞 Support Handle", "adm_set:support_username")
       ],
       [
+        Markup.button.callback("📢 Channel ID", "adm_set:channel_id"),
+        Markup.button.callback("👥 Group ID", "adm_set:group_id")
+      ],
+      [
         Markup.button.callback("📢 Channel Link", "adm_set:channel_link"),
         Markup.button.callback("👥 Group Link", "adm_set:group_link")
       ],
@@ -496,14 +504,21 @@ function registerAdminHandlers(bot) {
       [Markup.button.callback("🔙 Back to Dashboard", "adm:menu")]
     ]);
 
+    const extra = {
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+      link_preview_options: { is_disabled: true },
+      ...kb
+    };
+
     if (ctx.callbackQuery) {
       try {
-        return await ctx.editMessageText(text, { parse_mode: "HTML", ...kb });
+        return await ctx.editMessageText(text, extra);
       } catch (e) {
-        return await ctx.reply(text, { parse_mode: "HTML", ...kb });
+        return await ctx.reply(text, extra);
       }
     }
-    return await ctx.reply(text, { parse_mode: "HTML", ...kb });
+    return await ctx.reply(text, extra);
   }
 
   bot.action("adm:settings", async (ctx) => {
@@ -525,6 +540,21 @@ function registerAdminHandlers(bot) {
     const key = ctx.match[1];
     ctx.session.adminAction = { type: "set_setting", key };
     await ctx.answerCbQuery();
+
+    if (key === "group_link" || key === "channel_link") {
+      const label = key === "group_link" ? "Group" : "Channel";
+      const defaultText = key === "group_link" ? "Join Community Group" : "Join Official Channel";
+      return await ctx.reply(
+        `✏️ <b>Update ${label} Hyperlink:</b>\n\n` +
+        `• <b>শুধু লিংক দিলে:</b> <code>https://t.me/YourLink</code> (অটোমেটিক <b>"${defaultText}"</b> লেখার ভেতর লিংক লুকানো থাকবে)\n` +
+        `• <b>কাস্টম লেখাসহ হাইপারলিংক দিতে চাইলে:</b>\n` +
+        `<code>Click Here | https://t.me/YourLink</code>\n` +
+        `অথবা <code>[Click Here](https://t.me/YourLink)</code>\n\n` +
+        `<i>Type /cancel to cancel.</i>`,
+        { parse_mode: "HTML", disable_web_page_preview: true }
+      );
+    }
+
     await ctx.reply(`✏️ <b>Enter new value for <code>${key}</code>:</b>\n\n<i>Type /cancel to cancel.</i>`, { parse_mode: "HTML" });
   });
 
@@ -756,9 +786,13 @@ function registerAdminHandlers(bot) {
     const postNum = Number(ctx.match[3]);
 
     const settings = getAllSettings();
-    const chatId = dest === "grp" ? settings.group_id : settings.channel_id;
-    if (!chatId) {
-      return ctx.answerCbQuery(`❌ No ${dest === "grp" ? "group_id" : "channel_id"} configured in settings!`, {
+    const candidates =
+      dest === "grp"
+        ? getChatTargetCandidates(settings.group_id, settings.group_link)
+        : getChatTargetCandidates(settings.channel_id, settings.channel_link);
+
+    if (candidates.length === 0) {
+      return ctx.answerCbQuery(`❌ No ${dest === "grp" ? "Group" : "Channel"} ID or link configured in settings!`, {
         show_alert: true
       });
     }
@@ -768,18 +802,64 @@ function registerAdminHandlers(bot) {
     const templates = buildPromoTemplates(targetId, storeLink, settings);
     const chosen = templates[postNum - 1] || templates[0];
 
-    try {
-      await bot.telegram.sendMessage(chatId, chosen.htmlText, {
-        parse_mode: "HTML",
-        disable_web_page_preview: true,
-        ...Markup.inlineKeyboard([[Markup.button.url("🛒 Buy Instantly in Bot", storeLink)]])
-      });
-      await ctx.answerCbQuery(`✅ Promo Post #${postNum} published to ${dest === "grp" ? "Group" : "Channel"}!`, {
-        show_alert: true
-      });
-    } catch (err) {
-      await ctx.answerCbQuery(`❌ Failed to post: ${err.message}`, { show_alert: true });
+    let lastErr = "Unknown error";
+    for (const chatTarget of candidates) {
+      try {
+        const res = await bot.telegram.sendMessage(chatTarget, chosen.htmlText, {
+          parse_mode: "HTML",
+          disable_web_page_preview: true,
+          link_preview_options: { is_disabled: true },
+          ...Markup.inlineKeyboard([[Markup.button.url("🛒 Buy Instantly in Bot", storeLink)]])
+        });
+        if (res?.chat?.id) {
+          setSetting(dest === "grp" ? "group_id" : "channel_id", String(res.chat.id));
+        }
+        return await ctx.answerCbQuery(`✅ Promo Post #${postNum} published to ${dest === "grp" ? "Group" : "Channel"}!`, {
+          show_alert: true
+        });
+      } catch (err) {
+        lastErr = err.message || String(err);
+      }
     }
+
+    await ctx.answerCbQuery(`❌ Failed to post: ${lastErr}`, { show_alert: true });
+  });
+
+  // Quick command in any Group or Channel to bind it as the active Group/Channel
+  bot.command("setgroup", async (ctx) => {
+    if (!isAdmin(ctx)) return;
+    if (ctx.chat && (ctx.chat.type === "group" || ctx.chat.type === "supergroup")) {
+      setSetting("group_id", String(ctx.chat.id));
+      if (ctx.chat.username) {
+        setSetting("group_link", `https://t.me/${ctx.chat.username}`);
+      }
+      await ctx.reply(`✅ Group connected! Active <code>group_id</code> set to <code>${ctx.chat.id}</code>.`, {
+        parse_mode: "HTML"
+      });
+    }
+  });
+
+  // Automatically detect when bot is added to a Group or Channel and save its Chat ID
+  bot.on("my_chat_member", async (ctx) => {
+    try {
+      const chat = ctx.myChatMember?.chat;
+      const newStatus = ctx.myChatMember?.new_chat_member?.status;
+      if (!chat || !["member", "administrator"].includes(newStatus)) return;
+
+      if (chat.type === "group" || chat.type === "supergroup") {
+        setSetting("group_id", String(chat.id));
+        if (chat.username) {
+          setSetting("group_link", `https://t.me/${chat.username}`);
+        }
+        console.log(`✅ Auto-connected Group: ${chat.title} (${chat.id})`);
+      } else if (chat.type === "channel") {
+        setSetting("channel_id", String(chat.id));
+        if (chat.username) {
+          setSetting("channel_link", `https://t.me/${chat.username}`);
+        }
+        console.log(`✅ Auto-connected Channel: ${chat.title} (${chat.id})`);
+      }
+    } catch (e) {}
   });
 }
 
@@ -985,14 +1065,68 @@ async function handleAdminTextInput(bot, ctx, text) {
   ctx.session.adminAction = null;
 
   if (action.type === "set_setting") {
-    const cleanVal = text.trim();
+    let cleanVal = text.trim();
+    let customLabel = null;
+
+    if (action.key === "group_link" || action.key === "channel_link") {
+      // Support [Label](https://t.me/...) format
+      const mdMatch = cleanVal.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+      // Support <a href="https://t.me/...">Label</a> format
+      const htmlMatch = cleanVal.match(/^<a\s+href=["']([^"']+)["'][^>]*>([\s\S]+?)<\/a>$/i);
+      // Support "Label | https://t.me/..." format
+      const pipeParts = cleanVal.includes("|") ? cleanVal.split("|").map((s) => s.trim()) : null;
+
+      if (mdMatch) {
+        customLabel = mdMatch[1].trim();
+        cleanVal = mdMatch[2].trim();
+      } else if (htmlMatch) {
+        cleanVal = htmlMatch[1].trim();
+        customLabel = htmlMatch[2].trim();
+      } else if (pipeParts && pipeParts.length >= 2 && pipeParts[0] && pipeParts[1]) {
+        customLabel = pipeParts[0];
+        cleanVal = pipeParts.slice(1).join("|").trim();
+      }
+
+      if (cleanVal.startsWith("@")) {
+        cleanVal = `https://t.me/${cleanVal.slice(1)}`;
+      } else if (/^[a-zA-Z0-9_]{4,64}$/.test(cleanVal)) {
+        cleanVal = `https://t.me/${cleanVal}`;
+      }
+
+      if (customLabel) {
+        setSetting(action.key === "group_link" ? "group_link_text" : "channel_link_text", customLabel);
+      }
+
+      const handle = extractTelegramUsername(cleanVal);
+      if (handle) {
+        setSetting(action.key === "group_link" ? "group_id" : "channel_id", handle);
+      }
+    } else if (action.key === "group_id" || action.key === "channel_id") {
+      const handle = extractTelegramUsername(cleanVal);
+      if (handle) {
+        cleanVal = handle;
+      }
+    }
+
     setSetting(action.key, cleanVal);
+    const displayLabel =
+      customLabel ||
+      (action.key === "group_link"
+        ? getSetting("group_link_text") || "Join Community Group"
+        : action.key === "channel_link"
+        ? getSetting("channel_link_text") || "Join Official Channel"
+        : null);
+
     await ctx.reply(
       `✅ <b>Setting Updated!</b>\n` +
       `⚙️ <b>Field:</b> <code>${action.key}</code>\n` +
-      `📝 <b>New Value:</b> <b>${escapeHtml(String(cleanVal))}</b>`,
+      (displayLabel && (action.key === "group_link" || action.key === "channel_link")
+        ? `🔗 <b>Hyperlink Preview:</b> <a href="${escapeHtml(String(cleanVal))}">${escapeHtml(displayLabel)}</a>\n`
+        : `📝 <b>New Value:</b> <b>${escapeHtml(String(cleanVal))}</b>\n`),
       {
         parse_mode: "HTML",
+        disable_web_page_preview: true,
+        link_preview_options: { is_disabled: true },
         ...Markup.inlineKeyboard([[Markup.button.callback("⚙️ Back to Settings", "adm:settings")]])
       }
     );

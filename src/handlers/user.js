@@ -329,7 +329,7 @@ async function handlePurchase(bot, ctx, productId, quantity) {
 
     // Broadcast live purchase to group
     const settings = getAllSettings();
-    if (settings.group_id) {
+    if (settings.group_id || settings.group_link) {
       sendGroupOrderNotice(
         user.first_name || "Verified Buyer",
         order.product_name,
@@ -575,13 +575,17 @@ function registerUserHandlers(bot) {
 
     const joined = await checkMembership(bot, ctx);
     if (!joined) {
+      const chText = escapeHtml(settings.channel_link_text || "Join Official Channel");
+      const gpText = escapeHtml(settings.group_link_text || "Join Community Group");
       return ctx.reply(
         `⚠️ <b>Welcome!</b> To access the store, please join our official Channel and Group first:\n\n` +
-        `📢 <b>Channel:</b> ${settings.channel_link}\n` +
-        `👥 <b>Group:</b> ${settings.group_link}\n\n` +
+        `📢 <b>Channel:</b> <a href="${escapeHtml(settings.channel_link || "https://t.me/")}">${chText}</a>\n` +
+        `👥 <b>Group:</b> <a href="${escapeHtml(settings.group_link || "https://t.me/")}">${gpText}</a>\n\n` +
         `👇 <i>After joining both, tap "Check / I Have Joined" below:</i>`,
         {
           parse_mode: "HTML",
+          disable_web_page_preview: true,
+          link_preview_options: { is_disabled: true },
           ...forceJoinKeyboard()
         }
       );
@@ -648,13 +652,17 @@ function registerUserHandlers(bot) {
           if (ctx.callbackQuery) {
             await ctx.answerCbQuery("⚠️ Access Denied! Please join our Channel and Group first!", { show_alert: true });
           }
+          const chText = escapeHtml(settings.channel_link_text || "Join Official Channel");
+          const gpText = escapeHtml(settings.group_link_text || "Join Community Group");
           return ctx.reply(
             `⚠️ <b>Access Denied!</b>\nYou must join our Channel and Group before using the store.\n\n` +
-            `📢 <b>Channel:</b> ${settings.channel_link}\n` +
-            `👥 <b>Group:</b> ${settings.group_link}\n\n` +
+            `📢 <b>Channel:</b> <a href="${escapeHtml(settings.channel_link || "https://t.me/")}">${chText}</a>\n` +
+            `👥 <b>Group:</b> <a href="${escapeHtml(settings.group_link || "https://t.me/")}">${gpText}</a>\n\n` +
             `👇 <i>Tap below after joining:</i>`,
             {
               parse_mode: "HTML",
+              disable_web_page_preview: true,
+              link_preview_options: { is_disabled: true },
               ...forceJoinKeyboard()
             }
           );
@@ -741,7 +749,7 @@ function registerUserHandlers(bot) {
       ).catch(() => {});
 
       const settings = getAllSettings();
-      if (settings.group_id) {
+      if (settings.group_id || settings.group_link) {
         sendGroupFreeRewardNotice(
           user.first_name || "Verified Member",
           "ChatGPT Shared Account (1 Month)",
@@ -994,6 +1002,8 @@ function registerUserHandlers(bot) {
   // Live Proofs Screen
   async function showLiveProofsScreen(ctx) {
     const settings = getAllSettings();
+    const gpText = escapeHtml(settings.group_link_text || "Join Community Group");
+    const chText = escapeHtml(settings.channel_link_text || "Join Official Channel");
     const text =
       `📊 <b>LIVE ORDERS &amp; TRANSACTION PROOFS</b>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
@@ -1003,8 +1013,8 @@ function registerUserHandlers(bot) {
       `• <b>Google Cloud $300:</b> USA Region &amp; JSON Service Key Format\n` +
       `• <b>Azure &amp; AWS:</b> PAYG GPT T1–T5, Claude T5, AWS 5v 50RPM\n` +
       `• <b>Official API Keys:</b> Vertex Gemini, Claude, Bedrock, OpenAI, Azure\n\n` +
-      `👥 <b>Live Proofs Group:</b> ${settings.group_link || "https://t.me/"}\n` +
-      `📢 <b>Official Channel:</b> ${settings.channel_link || "https://t.me/"}\n` +
+      `👥 <b>Live Proofs Group:</b> <a href="${escapeHtml(settings.group_link || "https://t.me/")}">${gpText}</a>\n` +
+      `📢 <b>Official Channel:</b> <a href="${escapeHtml(settings.channel_link || "https://t.me/")}">${chText}</a>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `👇 <i>Tap below to view real-time buyer proofs in our group:</i>`;
 
@@ -1013,14 +1023,21 @@ function registerUserHandlers(bot) {
       [Markup.button.callback("🛍️ Browse Products", "menu_store")]
     ]);
 
+    const extra = {
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+      link_preview_options: { is_disabled: true },
+      ...kb
+    };
+
     if (ctx.callbackQuery) {
       try {
-        await ctx.editMessageText(text, { parse_mode: "HTML", ...kb });
+        await ctx.editMessageText(text, extra);
       } catch (e) {
-        await ctx.reply(text, { parse_mode: "HTML", ...kb });
+        await ctx.reply(text, extra);
       }
     } else {
-      await ctx.reply(text, { parse_mode: "HTML", ...kb });
+      await ctx.reply(text, extra);
     }
   }
 
@@ -1062,31 +1079,44 @@ function registerUserHandlers(bot) {
     const settings = getAllSettings();
     const support = settings.support_username || "@Morsalen0220";
     const cleanSupport = support.replace(/^@/, "");
+    const gpText = escapeHtml(settings.group_link_text || "Join Community Group");
+    const chText = escapeHtml(settings.channel_link_text || "Join Official Channel");
 
     const text =
       `📞 <b>24/7 CUSTOMER &amp; WHOLESALE SUPPORT</b>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `Need help with an order, bulk stock inquiry, or wallet deposit?\n\n` +
-      `👤 <b>Direct Admin:</b> @${cleanSupport}\n` +
-      `👥 <b>Community Group:</b> ${settings.group_link || "https://t.me/"}\n` +
-      `📢 <b>Official Channel:</b> ${settings.channel_link || "https://t.me/"}\n` +
+      `👤 <b>Direct Admin:</b> <a href="https://t.me/${escapeHtml(cleanSupport)}">@${escapeHtml(cleanSupport)}</a>\n` +
+      `👥 <b>Community Group:</b> <a href="${escapeHtml(settings.group_link || "https://t.me/")}">${gpText}</a>\n` +
+      `📢 <b>Official Channel:</b> <a href="${escapeHtml(settings.channel_link || "https://t.me/")}">${chText}</a>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `👇 <i>Choose an option below to reach us:</i>`;
 
     const kb = Markup.inlineKeyboard([
       [Markup.button.url("💬 Chat with Support Agent", `https://t.me/${cleanSupport}`)],
+      [
+        Markup.button.url("👥 Community Group", settings.group_link || "https://t.me/"),
+        Markup.button.url("📢 Official Channel", settings.channel_link || "https://t.me/")
+      ],
       [Markup.button.callback("✍️ Message Admin Directly via Bot", "user_reply_admin")],
       [Markup.button.callback("❓ View FAQ", "menu_faq")]
     ]);
 
+    const extra = {
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+      link_preview_options: { is_disabled: true },
+      ...kb
+    };
+
     if (ctx.callbackQuery) {
       try {
-        await ctx.editMessageText(text, { parse_mode: "HTML", ...kb });
+        await ctx.editMessageText(text, extra);
       } catch (e) {
-        await ctx.reply(text, { parse_mode: "HTML", ...kb });
+        await ctx.reply(text, extra);
       }
     } else {
-      await ctx.reply(text, { parse_mode: "HTML", ...kb });
+      await ctx.reply(text, extra);
     }
   }
 
