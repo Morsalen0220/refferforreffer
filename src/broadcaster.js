@@ -1,7 +1,6 @@
 const { Markup } = require("telegraf");
 const {
   getAllSettings,
-  setSetting,
   getAllProducts,
   getProduct,
   getUnitPrice,
@@ -11,7 +10,7 @@ const {
 } = require("./store");
 const { getRandomCustomerName } = require("./names");
 const { getRealCryptoTransactionProof } = require("./realTransactions");
-const { money, escapeHtml, getBotUsername, getChatTargetCandidates } = require("./helpers");
+const { money, escapeHtml, getBotUsername } = require("./helpers");
 
 let botInstance = null;
 let isBroadcasterStarted = false;
@@ -30,33 +29,25 @@ async function sendToGroupOnly(msg, keyboard) {
   if (!botInstance) return { success: false, error: "Bot not initialized" };
 
   const settings = getAllSettings();
-  const candidates = getChatTargetCandidates(settings.group_id, settings.group_link);
+  const groupId = settings.group_id;
 
-  if (candidates.length === 0) {
-    return { success: false, error: "No group_id or public group_link configured in settings" };
+  if (!groupId) {
+    return { success: false, error: "No group_id configured in settings" };
   }
 
-  let lastError = "Unknown error";
-  for (const target of candidates) {
-    try {
-      const res = await botInstance.telegram.sendMessage(target, msg, {
-        parse_mode: "HTML",
-        disable_web_page_preview: true,
-        link_preview_options: { is_disabled: true },
-        ...keyboard
-      });
-      if (res?.chat?.id && String(res.chat.id) !== String(settings.group_id)) {
-        setSetting("group_id", String(res.chat.id));
-      }
-      console.log(`📢 [Group Auto-Poster] Successfully sent notice to Group (${res?.chat?.id || target})`);
-      return { success: true, messageId: res.message_id };
-    } catch (err) {
-      lastError = err.message || String(err);
-      console.error(`[Group Auto-Poster Error] Failed candidate (${target}):`, lastError);
-    }
+  try {
+    const res = await botInstance.telegram.sendMessage(groupId, msg, {
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+      link_preview_options: { is_disabled: true },
+      ...keyboard
+    });
+    console.log(`📢 [Group Auto-Poster] Successfully sent notice to Group (${groupId})`);
+    return { success: true, messageId: res.message_id };
+  } catch (err) {
+    console.error(`[Group Auto-Poster Error] Failed to send to Group (${groupId}):`, err.message);
+    return { success: false, error: err.message };
   }
-
-  return { success: false, error: lastError };
 }
 
 // 1. Realtime Wallet Deposit Notice (Matches exact live product price)
@@ -212,7 +203,7 @@ function scheduleNextGroupBroadcast(isFirstRun = false) {
   setTimeout(async () => {
     try {
       const settings = getAllSettings();
-      if (settings.auto_broadcast_enabled !== false && (settings.group_id || settings.group_link)) {
+      if (settings.auto_broadcast_enabled !== false && settings.group_id) {
         const now = Date.now();
         // Purge timestamps older than 20 minutes
         autoPostTimestamps = autoPostTimestamps.filter((ts) => now - ts < TWENTY_MINUTES_MS);

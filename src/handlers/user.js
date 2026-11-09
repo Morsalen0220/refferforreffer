@@ -247,7 +247,7 @@ async function handlePurchase(bot, ctx, productId, quantity) {
       `👛 <b>Your Current Balance:</b> <b>${money(balance)}</b>\n` +
       `❗ <b>Amount Needed:</b> <b>${money(needed)}</b>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
-      `👇 <i>Tap below to deposit <b>${money(needed)}</b> (or full <b>${money(totalPrice)}</b>) via Binance Pay, USDT BEP-20, or Polygon:</i>`;
+      `👇 <i>Tap below to deposit <b>${money(needed)}</b> (or full <b>${money(totalPrice)}</b>) via Binance Pay, USDT (TRC-20 / BEP-20 / Polygon), or LTC:</i>`;
 
     const kb = Markup.inlineKeyboard([
       [Markup.button.callback(`📥 Deposit ${money(needed)} Now`, `dep_quick:${needed.toFixed(2)}`)],
@@ -329,7 +329,7 @@ async function handlePurchase(bot, ctx, productId, quantity) {
 
     // Broadcast live purchase to group
     const settings = getAllSettings();
-    if (settings.group_id || settings.group_link) {
+    if (settings.group_id) {
       sendGroupOrderNotice(
         user.first_name || "Verified Buyer",
         order.product_name,
@@ -363,7 +363,7 @@ async function showWalletScreen(ctx) {
     `🛒 <b>Total Spent:</b> <b>${money(user.total_spent || 0)}</b>\n` +
     `📦 <b>Completed Orders:</b> <b>${user.orders_count || 0}</b>\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
-    `⚡️ <i>Select an amount below to top up your wallet via USDT (BEP-20 / Polygon), Litecoin (LTC)${getSetting("binance_pay_enabled") !== false ? ", or Binance Pay" : ""}:</i>`;
+    `⚡️ <i>Select an amount below to top up your wallet via USDT (TRC-20 / BEP-20 / Polygon), Litecoin (LTC)${getSetting("binance_pay_enabled") !== false ? ", or Binance Pay" : ""}:</i>`;
 
   const kb = Markup.inlineKeyboard([
     [
@@ -401,6 +401,7 @@ async function showDepositMethodSelector(ctx, amount) {
     methodButtons.push([Markup.button.callback("🟡 Binance Pay ID (0% Fee)", `dep_method:BINANCE_PAY:${amt.toFixed(2)}`)]);
   }
   methodButtons.push(
+    [Markup.button.callback("🔴 USDT (TRC-20 / TRON Network)", `dep_method:USDT_TRC20:${amt.toFixed(2)}`)],
     [Markup.button.callback("🟢 USDT (BEP-20 / BSC Network)", `dep_method:USDT_BEP20:${amt.toFixed(2)}`)],
     [Markup.button.callback("🟣 USDT (Polygon Network)", `dep_method:USDT_POLYGON:${amt.toFixed(2)}`)],
     [Markup.button.callback("⚪️ Litecoin (LTC Network)", `dep_method:LTC_COIN:${amt.toFixed(2)}`)],
@@ -575,17 +576,13 @@ function registerUserHandlers(bot) {
 
     const joined = await checkMembership(bot, ctx);
     if (!joined) {
-      const chText = escapeHtml(settings.channel_link_text || "Join Official Channel");
-      const gpText = escapeHtml(settings.group_link_text || "Join Community Group");
       return ctx.reply(
         `⚠️ <b>Welcome!</b> To access the store, please join our official Channel and Group first:\n\n` +
-        `📢 <b>Channel:</b> <a href="${escapeHtml(settings.channel_link || "https://t.me/")}">${chText}</a>\n` +
-        `👥 <b>Group:</b> <a href="${escapeHtml(settings.group_link || "https://t.me/")}">${gpText}</a>\n\n` +
+        `📢 <b>Channel:</b> ${settings.channel_link}\n` +
+        `👥 <b>Group:</b> ${settings.group_link}\n\n` +
         `👇 <i>After joining both, tap "Check / I Have Joined" below:</i>`,
         {
           parse_mode: "HTML",
-          disable_web_page_preview: true,
-          link_preview_options: { is_disabled: true },
           ...forceJoinKeyboard()
         }
       );
@@ -595,6 +592,30 @@ function registerUserHandlers(bot) {
       parse_mode: "HTML",
       ...getMainMenuReplyKeyboard()
     });
+
+    const groupLink = settings.group_link || "https://t.me/RefferRewardes";
+    const channelLink = settings.channel_link || "https://t.me/RefferRewardss";
+    await ctx.reply(
+      `👥 <b>JOIN OUR OFFICIAL COMMUNITY GROUP!</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `🔥 Check live buyer order proofs, daily restock alerts, and flash wholesale deals in our community group:\n\n` +
+      `👉 <b>Group:</b> ${groupLink}\n` +
+      `📢 <b>Channel:</b> ${channelLink}`,
+      {
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.url("👥 Join Our Community Group", groupLink),
+            Markup.button.url("📢 Official Channel", channelLink)
+          ],
+          [
+            Markup.button.callback("🛍️ Browse Store", "menu_store"),
+            Markup.button.callback("🎁 Refer & Earn", "menu_refer")
+          ]
+        ])
+      }
+    );
   });
 
   // Check Membership Callback
@@ -652,17 +673,13 @@ function registerUserHandlers(bot) {
           if (ctx.callbackQuery) {
             await ctx.answerCbQuery("⚠️ Access Denied! Please join our Channel and Group first!", { show_alert: true });
           }
-          const chText = escapeHtml(settings.channel_link_text || "Join Official Channel");
-          const gpText = escapeHtml(settings.group_link_text || "Join Community Group");
           return ctx.reply(
             `⚠️ <b>Access Denied!</b>\nYou must join our Channel and Group before using the store.\n\n` +
-            `📢 <b>Channel:</b> <a href="${escapeHtml(settings.channel_link || "https://t.me/")}">${chText}</a>\n` +
-            `👥 <b>Group:</b> <a href="${escapeHtml(settings.group_link || "https://t.me/")}">${gpText}</a>\n\n` +
+            `📢 <b>Channel:</b> ${settings.channel_link}\n` +
+            `👥 <b>Group:</b> ${settings.group_link}\n\n` +
             `👇 <i>Tap below after joining:</i>`,
             {
               parse_mode: "HTML",
-              disable_web_page_preview: true,
-              link_preview_options: { is_disabled: true },
               ...forceJoinKeyboard()
             }
           );
@@ -749,7 +766,7 @@ function registerUserHandlers(bot) {
       ).catch(() => {});
 
       const settings = getAllSettings();
-      if (settings.group_id || settings.group_link) {
+      if (settings.group_id) {
         sendGroupFreeRewardNotice(
           user.first_name || "Verified Member",
           "ChatGPT Shared Account (1 Month)",
@@ -833,23 +850,32 @@ function registerUserHandlers(bot) {
 
     ctx.answerCbQuery().catch(() => {});
 
+    // Automatically activate deposit proof listener so user can even drop a screenshot right away
+    ctx.session.depositState = {
+      method,
+      amount: actAmount,
+      step: "awaiting_proof",
+      proofMode: "any"
+    };
+
     if (method === "BINANCE_PAY") {
       const payId = settings.binance_pay_id || "350946509";
       const text =
-        `🟡 <b>DEPOSIT VIA BINANCE PAY</b>\n` +
+        `🟡 <b>DEPOSIT VIA BINANCE PAY (0% FEE)</b>\n` +
         `━━━━━━━━━━━━━━━━━━━━\n` +
         `💵 <b>Amount to Send:</b> <b>${money(actAmount)}</b>\n` +
-        `🆔 <b>Binance Pay ID:</b> <code>${payId}</code> (Tap to copy)\n\n` +
-        `📌 <b>Instructions:</b>\n` +
-        `1. Open Binance App ➔ Pay ➔ Send.\n` +
-        `2. Paste Pay ID: <code>${payId}</code>\n` +
-        `3. Send <b>${money(actAmount)}</b>.\n` +
-        `4. Copy your <b>Binance Order ID</b>.\n` +
-        `5. Tap "✅ I Have Paid" below and send your Order ID or screenshot.`;
+        `🆔 <b>Binance Pay ID (Tap to copy):</b>\n<code>${payId}</code>\n\n` +
+        `📌 <b>Step-by-Step Guide:</b>\n` +
+        `1️⃣ Open <b>Binance App</b> ➔ <b>Pay</b> ➔ <b>Send</b>\n` +
+        `2️⃣ Paste Binance Pay ID: <code>${payId}</code>\n` +
+        `3️⃣ Send exact amount: <b>${money(actAmount)}</b>\n` +
+        `4️⃣ Take a <b>Screenshot 📸</b> of the payment success screen (or copy the Order ID)\n\n` +
+        `👇 <i>Tap <b>"📸 Upload Payment Screenshot"</b> below (or simply send the screenshot photo directly in this chat):</i>`;
 
       const kb = Markup.inlineKeyboard([
-        [Markup.button.callback("✅ I Have Paid / Submit Proof", `dep_submit:BINANCE_PAY:${actAmount.toFixed(2)}`)],
-        [Markup.button.callback("🔙 Back", `dep_quick:${actAmount.toFixed(2)}`)]
+        [Markup.button.callback("📸 Upload Payment Screenshot", `dep_proof_ss:BINANCE_PAY:${actAmount.toFixed(2)}`)],
+        [Markup.button.callback("🔢 Submit Order ID / TxID", `dep_submit:BINANCE_PAY:${actAmount.toFixed(2)}`)],
+        [Markup.button.callback("🔙 Change Payment Method", `dep_quick:${actAmount.toFixed(2)}`)]
       ]);
 
       return renderScreen(ctx, text, kb);
@@ -862,35 +888,49 @@ function registerUserHandlers(bot) {
         `🌐 <b>Network:</b> <b>Litecoin (LTC Native Network)</b>\n` +
         `📫 <b>LTC Deposit Address (Tap to copy):</b>\n<code>${ltcAddress}</code>\n\n` +
         `⚠️ <i>Send Litecoin (LTC) worth <b>$${actAmount.toFixed(2)} USD</b> on the official Litecoin network.</i>\n\n` +
-        `👇 <i>After sending payment, tap "✅ I Have Paid" below to submit your LTC TxID or receipt:</i>`;
+        `👇 <i>After payment, tap <b>"📸 Upload Payment Screenshot"</b> below (or send the screenshot directly in this chat):</i>`;
 
       const kb = Markup.inlineKeyboard([
-        [Markup.button.callback("✅ I Have Paid / Submit Proof", `dep_submit:LTC_COIN:${actAmount.toFixed(2)}`)],
-        [Markup.button.callback("📱 Show QR Code", `dep_qr:LTC_COIN:${actAmount.toFixed(2)}`)],
-        [Markup.button.callback("🔙 Back", `dep_quick:${actAmount.toFixed(2)}`)]
+        [Markup.button.callback("📸 Upload Payment Screenshot", `dep_proof_ss:LTC_COIN:${actAmount.toFixed(2)}`)],
+        [
+          Markup.button.callback("🔢 Submit TxID", `dep_submit:LTC_COIN:${actAmount.toFixed(2)}`),
+          Markup.button.callback("📱 Show QR Code", `dep_qr:LTC_COIN:${actAmount.toFixed(2)}`)
+        ],
+        [Markup.button.callback("🔙 Change Payment Method", `dep_quick:${actAmount.toFixed(2)}`)]
       ]);
 
       return renderScreen(ctx, text, kb);
     } else {
+      const isTrc20 = method === "USDT_TRC20";
       const isBep20 = method === "USDT_BEP20";
-      const address = isBep20
+      const address = isTrc20
+        ? settings.trc20_usdt_address || "TGeB9fKc7pQvX8m4n9wL2vR5yJ6sK1hPqW"
+        : isBep20
         ? settings.bep20_usdt_address || "0xC3fC8C91A5B26C71DcD0aC1F34944FB298bCeBbF"
         : settings.polygon_usdt_address || "0xC3fC8C91A5B26C71DcD0aC1F34944FB298bCeBbF";
-      const networkName = isBep20 ? "BNB Smart Chain (BEP-20)" : "Polygon (MATIC / POL)";
+      const networkName = isTrc20
+        ? "TRON (TRC-20)"
+        : isBep20
+        ? "BNB Smart Chain (BEP-20)"
+        : "Polygon (MATIC / POL)";
+      const netIcon = isTrc20 ? "🔴" : isBep20 ? "🟢" : "🟣";
 
       const text =
-        `${isBep20 ? "🟢" : "🟣"} <b>DEPOSIT VIA USDT (${networkName})</b>\n` +
+        `${netIcon} <b>DEPOSIT VIA USDT (${networkName})</b>\n` +
         `━━━━━━━━━━━━━━━━━━━━\n` +
         `💵 <b>Amount to Send:</b> <b>${money(actAmount)}</b>\n` +
         `🌐 <b>Network:</b> <b>${networkName}</b>\n` +
         `📫 <b>Deposit Address (Tap to copy):</b>\n<code>${address}</code>\n\n` +
         `⚠️ <i>Send only USDT on ${networkName}.</i>\n\n` +
-        `👇 <i>After sending payment, tap "✅ I Have Paid" below to submit your TxID or receipt:</i>`;
+        `👇 <i>After payment, tap <b>"📸 Upload Payment Screenshot"</b> below (or send the screenshot directly in this chat):</i>`;
 
       const kb = Markup.inlineKeyboard([
-        [Markup.button.callback("✅ I Have Paid / Submit Proof", `dep_submit:${method}:${actAmount.toFixed(2)}`)],
-        [Markup.button.callback("📱 Show QR Code", `dep_qr:${method}:${actAmount.toFixed(2)}`)],
-        [Markup.button.callback("🔙 Back", `dep_quick:${actAmount.toFixed(2)}`)]
+        [Markup.button.callback("📸 Upload Payment Screenshot", `dep_proof_ss:${method}:${actAmount.toFixed(2)}`)],
+        [
+          Markup.button.callback("🔢 Submit TxID", `dep_submit:${method}:${actAmount.toFixed(2)}`),
+          Markup.button.callback("📱 Show QR Code", `dep_qr:${method}:${actAmount.toFixed(2)}`)
+        ],
+        [Markup.button.callback("🔙 Change Payment Method", `dep_quick:${actAmount.toFixed(2)}`)]
       ]);
 
       return renderScreen(ctx, text, kb);
@@ -903,25 +943,44 @@ function registerUserHandlers(bot) {
     const settings = getAllSettings();
     ctx.answerCbQuery("Generating QR Code...").catch(() => {});
 
+    ctx.session.depositState = {
+      method,
+      amount: actAmount,
+      step: "awaiting_proof",
+      proofMode: "any"
+    };
+
     const address =
       method === "LTC_COIN"
         ? settings.ltc_address || "ltc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
+        : method === "USDT_TRC20"
+        ? settings.trc20_usdt_address || "TGeB9fKc7pQvX8m4n9wL2vR5yJ6sK1hPqW"
         : method === "USDT_BEP20"
         ? settings.bep20_usdt_address || "0xC3fC8C91A5B26C71DcD0aC1F34944FB298bCeBbF"
         : settings.polygon_usdt_address || "0xC3fC8C91A5B26C71DcD0aC1F34944FB298bCeBbF";
 
     const label =
-      method === "LTC_COIN" ? "Litecoin (LTC)" : method === "USDT_BEP20" ? "USDT (BEP-20)" : "USDT (Polygon)";
+      method === "LTC_COIN"
+        ? "Litecoin (LTC)"
+        : method === "USDT_TRC20"
+        ? "USDT (TRC-20)"
+        : method === "USDT_BEP20"
+        ? "USDT (BEP-20)"
+        : "USDT (Polygon)";
 
     try {
       const qrBuffer = await QRCode.toBuffer(address, { width: 320, margin: 2 });
       await ctx.replyWithPhoto(
         { source: qrBuffer },
         {
-          caption: `📱 <b>${label} QR Code (${money(actAmount)})</b>\n<code>${address}</code>`,
+          caption:
+            `📱 <b>${label} QR Code (${money(actAmount)})</b>\n` +
+            `<code>${address}</code>\n\n` +
+            `📸 <i>Scan to pay, then tap below to upload your payment screenshot!</i>`,
           parse_mode: "HTML",
           ...Markup.inlineKeyboard([
-            [Markup.button.callback("✅ I Have Paid / Submit Proof", `dep_submit:${method}:${actAmount.toFixed(2)}`)]
+            [Markup.button.callback("📸 Upload Payment Screenshot", `dep_proof_ss:${method}:${actAmount.toFixed(2)}`)],
+            [Markup.button.callback("🔢 Submit TxID / Hash", `dep_submit:${method}:${actAmount.toFixed(2)}`)]
           ])
         }
       );
@@ -930,22 +989,74 @@ function registerUserHandlers(bot) {
     }
   });
 
+  bot.action(/^dep_proof_ss:([^:]+):(.+)$/, async (ctx) => {
+    const method = ctx.match[1];
+    const amount = parseFloat(ctx.match[2]) || 15.00;
+    ctx.session.depositState = {
+      method,
+      amount,
+      step: "awaiting_proof",
+      proofMode: "screenshot"
+    };
+
+    const methodLabels = {
+      BINANCE_PAY: "🟡 Binance Pay",
+      USDT_TRC20: "🔴 USDT (TRC-20)",
+      USDT_BEP20: "🟢 USDT (BEP-20)",
+      USDT_POLYGON: "🟣 USDT (Polygon)",
+      LTC_COIN: "⚪️ Litecoin (LTC)"
+    };
+    const mName = methodLabels[method] || method;
+
+    const text =
+      `📸 <b>UPLOAD PAYMENT SCREENSHOT (${money(amount)})</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `🌐 <b>Payment Method:</b> <b>${escapeHtml(mName)}</b>\n` +
+      `💵 <b>Expected Amount:</b> <b>${money(amount)}</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `📤 <b>How to Send Your Screenshot Proof:</b>\n` +
+      `1️⃣ Tap the <b>📎 Paperclip / Attachment icon</b> at the bottom of your Telegram chat.\n` +
+      `2️⃣ Select your <b>Payment Receipt Screenshot</b> from your gallery (or send as a file).\n` +
+      `3️⃣ <i>(Optional)</i> Add your TxID or note in the photo caption and hit <b>Send</b>!\n\n` +
+      `⚡️ <i>As soon as you send the screenshot, our system will forward it to Admin for instant wallet credit!</i>`;
+
+    const kb = Markup.inlineKeyboard([
+      [Markup.button.callback("🔢 Send Text TxID Instead", `dep_submit:${method}:${amount.toFixed(2)}`)],
+      [Markup.button.callback("🔙 Back to Payment Details", `dep_method:${method}:${amount.toFixed(2)}`)]
+    ]);
+
+    return renderScreen(ctx, text, kb);
+  });
+
   bot.action(/^dep_submit:([^:]+):(.+)$/, async (ctx) => {
     const method = ctx.match[1];
     const amount = parseFloat(ctx.match[2]) || 15.00;
     ctx.session.depositState = {
       method,
       amount,
-      step: "awaiting_proof"
+      step: "awaiting_proof",
+      proofMode: "txid"
     };
+
+    const methodLabels = {
+      BINANCE_PAY: "🟡 Binance Pay",
+      USDT_TRC20: "🔴 USDT (TRC-20)",
+      USDT_BEP20: "🟢 USDT (BEP-20)",
+      USDT_POLYGON: "🟣 USDT (Polygon)",
+      LTC_COIN: "⚪️ Litecoin (LTC)"
+    };
+    const mName = methodLabels[method] || method;
+
     const text =
-      `📝 <b>SUBMIT DEPOSIT PROOF (${money(amount)})</b>\n` +
+      `🔢 <b>SUBMIT TRANSACTION ID / ORDER ID (${money(amount)})</b>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
-      `🌐 <b>Selected Method:</b> <b>${escapeHtml(method)}</b>\n\n` +
-      `👇 Please reply with your payment <b>Transaction ID (TxID)</b>, <b>Binance Order ID</b>, or send a <b>Screenshot image</b> of your transfer receipt.\n\n` +
+      `🌐 <b>Selected Method:</b> <b>${escapeHtml(mName)}</b>\n` +
+      `💵 <b>Deposit Amount:</b> <b>${money(amount)}</b>\n\n` +
+      `👇 <b>Please reply with your Transaction Hash (TxID), Binance Order ID, or drop a Screenshot image directly in this chat:</b>\n\n` +
       `<i>Type /cancel to cancel.</i>`;
 
     const kb = Markup.inlineKeyboard([
+      [Markup.button.callback("📸 Switch to Screenshot Upload", `dep_proof_ss:${method}:${amount.toFixed(2)}`)],
       [Markup.button.callback("🔙 Back to Payment Details", `dep_method:${method}:${amount.toFixed(2)}`)]
     ]);
 
@@ -1002,8 +1113,6 @@ function registerUserHandlers(bot) {
   // Live Proofs Screen
   async function showLiveProofsScreen(ctx) {
     const settings = getAllSettings();
-    const gpText = escapeHtml(settings.group_link_text || "Join Community Group");
-    const chText = escapeHtml(settings.channel_link_text || "Join Official Channel");
     const text =
       `📊 <b>LIVE ORDERS &amp; TRANSACTION PROOFS</b>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
@@ -1013,8 +1122,8 @@ function registerUserHandlers(bot) {
       `• <b>Google Cloud $300:</b> USA Region &amp; JSON Service Key Format\n` +
       `• <b>Azure &amp; AWS:</b> PAYG GPT T1–T5, Claude T5, AWS 5v 50RPM\n` +
       `• <b>Official API Keys:</b> Vertex Gemini, Claude, Bedrock, OpenAI, Azure\n\n` +
-      `👥 <b>Live Proofs Group:</b> <a href="${escapeHtml(settings.group_link || "https://t.me/")}">${gpText}</a>\n` +
-      `📢 <b>Official Channel:</b> <a href="${escapeHtml(settings.channel_link || "https://t.me/")}">${chText}</a>\n` +
+      `👥 <b>Live Proofs Group:</b> ${settings.group_link || "https://t.me/"}\n` +
+      `📢 <b>Official Channel:</b> ${settings.channel_link || "https://t.me/"}\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `👇 <i>Tap below to view real-time buyer proofs in our group:</i>`;
 
@@ -1023,21 +1132,14 @@ function registerUserHandlers(bot) {
       [Markup.button.callback("🛍️ Browse Products", "menu_store")]
     ]);
 
-    const extra = {
-      parse_mode: "HTML",
-      disable_web_page_preview: true,
-      link_preview_options: { is_disabled: true },
-      ...kb
-    };
-
     if (ctx.callbackQuery) {
       try {
-        await ctx.editMessageText(text, extra);
+        await ctx.editMessageText(text, { parse_mode: "HTML", ...kb });
       } catch (e) {
-        await ctx.reply(text, extra);
+        await ctx.reply(text, { parse_mode: "HTML", ...kb });
       }
     } else {
-      await ctx.reply(text, extra);
+      await ctx.reply(text, { parse_mode: "HTML", ...kb });
     }
   }
 
@@ -1052,7 +1154,7 @@ function registerUserHandlers(bot) {
       `• <b>Official API Keys:</b> Vertex/AI Studio Gemini, Claude High-Quota, AWS Bedrock, OpenAI &amp; Azure Official Keys\n` +
       `• <b>Global eSIM &amp; GV:</b> International eSIM cards ($8) &amp; USA Google Voice ($6)\n\n` +
       `<b>2. How do I purchase a product?</b>\n` +
-      `Top up your <b>👛 Wallet</b> via Binance Pay, USDT (BEP-20), or Polygon, then select any product under <b>🛍️ Buy Products</b> for instant checkout.\n\n` +
+      `Top up your <b>👛 Wallet</b> via Binance Pay, USDT (TRC-20 / BEP-20 / Polygon), or Litecoin (LTC), then select any product under <b>🛍️ Buy Products</b> for instant checkout.\n\n` +
       `<b>3. Do you offer bulk/wholesale discounts?</b>\n` +
       `Yes! Ordering 5+ units automatically applies our bulk wholesale pricing.\n\n` +
       `<b>4. Need custom bulk stock or escrow support?</b>\n` +
@@ -1079,44 +1181,31 @@ function registerUserHandlers(bot) {
     const settings = getAllSettings();
     const support = settings.support_username || "@Morsalen0220";
     const cleanSupport = support.replace(/^@/, "");
-    const gpText = escapeHtml(settings.group_link_text || "Join Community Group");
-    const chText = escapeHtml(settings.channel_link_text || "Join Official Channel");
 
     const text =
       `📞 <b>24/7 CUSTOMER &amp; WHOLESALE SUPPORT</b>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `Need help with an order, bulk stock inquiry, or wallet deposit?\n\n` +
-      `👤 <b>Direct Admin:</b> <a href="https://t.me/${escapeHtml(cleanSupport)}">@${escapeHtml(cleanSupport)}</a>\n` +
-      `👥 <b>Community Group:</b> <a href="${escapeHtml(settings.group_link || "https://t.me/")}">${gpText}</a>\n` +
-      `📢 <b>Official Channel:</b> <a href="${escapeHtml(settings.channel_link || "https://t.me/")}">${chText}</a>\n` +
+      `👤 <b>Direct Admin:</b> @${cleanSupport}\n` +
+      `👥 <b>Community Group:</b> ${settings.group_link || "https://t.me/"}\n` +
+      `📢 <b>Official Channel:</b> ${settings.channel_link || "https://t.me/"}\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `👇 <i>Choose an option below to reach us:</i>`;
 
     const kb = Markup.inlineKeyboard([
       [Markup.button.url("💬 Chat with Support Agent", `https://t.me/${cleanSupport}`)],
-      [
-        Markup.button.url("👥 Community Group", settings.group_link || "https://t.me/"),
-        Markup.button.url("📢 Official Channel", settings.channel_link || "https://t.me/")
-      ],
       [Markup.button.callback("✍️ Message Admin Directly via Bot", "user_reply_admin")],
       [Markup.button.callback("❓ View FAQ", "menu_faq")]
     ]);
 
-    const extra = {
-      parse_mode: "HTML",
-      disable_web_page_preview: true,
-      link_preview_options: { is_disabled: true },
-      ...kb
-    };
-
     if (ctx.callbackQuery) {
       try {
-        await ctx.editMessageText(text, extra);
+        await ctx.editMessageText(text, { parse_mode: "HTML", ...kb });
       } catch (e) {
-        await ctx.reply(text, extra);
+        await ctx.reply(text, { parse_mode: "HTML", ...kb });
       }
     } else {
-      await ctx.reply(text, extra);
+      await ctx.reply(text, { parse_mode: "HTML", ...kb });
     }
   }
 
@@ -1285,55 +1374,113 @@ function registerUserHandlers(bot) {
     return next();
   });
 
-  // Photo upload handler for deposits
-  bot.on("photo", async (ctx) => {
-    if (ctx.session?.depositState?.step === "awaiting_proof") {
-      const { method, amount } = ctx.session.depositState;
-      ctx.session.depositState = null;
+  // Photo & Document Screenshot upload handler for deposits
+  async function handleDepositImageSubmission(ctx, fileId, isDocument = false, rawCaption = "") {
+    const state = ctx.session?.depositState;
+    const method = state?.method || "USDT_BEP20";
+    const amount = state?.amount || Number(ctx.session?.depositAmount) || 15.00;
+    ctx.session.depositState = null;
 
-      const user = getUser(ctx.from.id) || getOrCreateUser(ctx.from).user;
-      const photos = ctx.message.photo;
-      const largestPhoto = photos[photos.length - 1];
-      const caption = ctx.message.caption || "Screenshot payment receipt";
+    const methodLabels = {
+      BINANCE_PAY: "🟡 Binance Pay",
+      USDT_TRC20: "🔴 USDT (TRC-20)",
+      USDT_BEP20: "🟢 USDT (BEP-20)",
+      USDT_POLYGON: "🟣 USDT (Polygon)",
+      LTC_COIN: "⚪️ Litecoin (LTC)"
+    };
+    const mName = methodLabels[method] || method;
 
-      const deposit = createDeposit({
-        user_id: user.id,
-        user_name: user.username ? `@${user.username}` : user.first_name,
-        amount: amount || 15.00,
-        method,
-        proof: caption,
-        photo_file_id: largestPhoto.file_id
-      });
+    const user = getUser(ctx.from.id) || getOrCreateUser(ctx.from).user;
+    const caption = rawCaption.trim() || "📸 Payment Receipt Screenshot";
 
-      await ctx.reply(
-        `✅ <b>Deposit Screenshot Received!</b>\n` +
-        `━━━━━━━━━━━━━━━━━━━━\n` +
-        `🆔 <b>Deposit ID:</b> <code>${deposit.id}</code>\n` +
-        `💵 <b>Amount:</b> <b>${money(deposit.amount)}</b>\n` +
-        `⚡️ <b>Method:</b> ${method}\n\n` +
-        `⏳ <i>Our admin team will review your receipt and credit your wallet balance shortly!</i>`,
-        {
-          parse_mode: "HTML",
-          ...getMainMenuReplyKeyboard()
-        }
-      );
+    const deposit = createDeposit({
+      user_id: user.id,
+      user_name: user.username ? `@${user.username}` : user.first_name,
+      amount,
+      method,
+      proof: caption,
+      photo_file_id: fileId
+    });
 
-      // Forward receipt to Admin
-      bot.telegram.sendPhoto(ADMIN_ID, largestPhoto.file_id, {
-        caption:
-          `🔔 <b>NEW WALLET DEPOSIT (SCREENSHOT)</b>\n` +
-          `━━━━━━━━━━━━━━━━━━━━\n` +
-          `🆔 <b>ID:</b> <code>${deposit.id}</code>\n` +
-          `👤 <b>Buyer:</b> @${user.username || user.first_name} (ID: <code>${user.id}</code>)\n` +
-          `💵 <b>Amount:</b> <b>${money(deposit.amount)}</b>\n` +
-          `🌐 <b>Method:</b> ${method}\n` +
-          `📝 <b>Caption:</b> ${escapeHtml(caption)}`,
+    await ctx.reply(
+      `<blockquote>📸 <b>PAYMENT SCREENSHOT RECEIVED!</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `🆔 <b>Deposit ID:</b> <code>${deposit.id}</code>\n` +
+      `💵 <b>Amount:</b> <b>${money(deposit.amount)}</b>\n` +
+      `🌐 <b>Method:</b> <b>${escapeHtml(mName)}</b>\n` +
+      `📝 <b>Note / Proof:</b> <code>${escapeHtml(caption)}</code>\n` +
+      `📊 <b>Status:</b> <b>⏳ Pending Admin Verification</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `⚡️ <i>Your payment screenshot has been forwarded to Admin! Your wallet balance will be credited as soon as it is verified.</i></blockquote>`,
+      {
         parse_mode: "HTML",
         ...Markup.inlineKeyboard([
-          [Markup.button.callback(`✅ Approve & Credit ${money(deposit.amount)}`, `adm_dep_app:${deposit.id}`)],
-          [Markup.button.callback("❌ Reject Deposit", `adm_dep_rej:${deposit.id}`)]
+          [Markup.button.callback("👛 Check My Wallet", "menu_wallet"), Markup.button.callback("🛍️ Browse Store", "menu_store")]
         ])
+      }
+    );
+
+    const adminCaption =
+      `🔔 <b>NEW WALLET DEPOSIT (📸 SCREENSHOT)</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `🆔 <b>Deposit ID:</b> <code>${deposit.id}</code>\n` +
+      `👤 <b>Buyer:</b> ${escapeHtml(user.first_name || "Buyer")} (${user.username ? `@${escapeHtml(user.username)}` : `ID: <code>${user.id}</code>`})\n` +
+      `💵 <b>Amount:</b> <b>${money(deposit.amount)}</b>\n` +
+      `🌐 <b>Method:</b> <b>${escapeHtml(mName)}</b>\n` +
+      `📝 <b>Caption / Note:</b> <code>${escapeHtml(caption)}</code>`;
+
+    const adminKb = Markup.inlineKeyboard([
+      [Markup.button.callback(`✅ Approve & Credit ${money(deposit.amount)}`, `adm_dep_app:${deposit.id}`)],
+      [Markup.button.callback("❌ Reject Deposit", `adm_dep_rej:${deposit.id}`)],
+      [Markup.button.callback("📩 Message Buyer", `adm_user_dm:${user.id}`)]
+    ]);
+
+    if (isDocument) {
+      bot.telegram.sendDocument(ADMIN_ID, fileId, {
+        caption: adminCaption,
+        parse_mode: "HTML",
+        ...adminKb
       }).catch(() => {});
+    } else {
+      bot.telegram.sendPhoto(ADMIN_ID, fileId, {
+        caption: adminCaption,
+        parse_mode: "HTML",
+        ...adminKb
+      }).catch(() => {});
+    }
+  }
+
+  bot.on("photo", async (ctx) => {
+    const photos = ctx.message.photo;
+    const largestPhoto = photos[photos.length - 1];
+    const caption = ctx.message.caption || "";
+
+    if (ctx.session?.depositState?.step === "awaiting_proof" || ctx.session?.depositAmount) {
+      return handleDepositImageSubmission(ctx, largestPhoto.file_id, false, caption);
+    }
+
+    await ctx.reply(
+      `📸 <b>Screenshot Detected!</b>\n` +
+      `Are you submitting a payment receipt for a wallet deposit?\n\n` +
+      `👇 <i>Tap your deposit amount below or open <b>👛 Wallet</b> to attach this screenshot:</i>`,
+      {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("👛 Open Wallet & Submit Deposit", "menu_wallet")],
+          [Markup.button.callback("📞 Send to Admin Support", "user_reply_admin")]
+        ])
+      }
+    );
+  });
+
+  bot.on("document", async (ctx) => {
+    const doc = ctx.message.document;
+    const mime = String(doc?.mime_type || "").toLowerCase();
+    if (
+      (mime.startsWith("image/") || mime === "application/pdf") &&
+      (ctx.session?.depositState?.step === "awaiting_proof" || ctx.session?.depositAmount)
+    ) {
+      return handleDepositImageSubmission(ctx, doc.file_id, true, ctx.message.caption || "");
     }
   });
 }

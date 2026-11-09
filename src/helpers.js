@@ -21,62 +21,6 @@ function adminOnly(ctx) {
   return true;
 }
 
-// Extract @username from a public t.me link or @handle (ignores private +invite / joinchat links)
-function extractTelegramUsername(input) {
-  const raw = String(input || "").trim();
-  if (!raw) return null;
-
-  if (raw.startsWith("@") && raw.length > 2 && !raw.includes("/")) {
-    return raw;
-  }
-
-  const match = raw.match(/(?:https?:\/\/)?(?:www\.)?(?:t\.me|telegram\.me)\/([a-zA-Z0-9_]{4,64})\/?$/i);
-  if (match && match[1]) {
-    const handle = match[1];
-    const reserved = ["joinchat", "addstickers", "addlist", "share", "proxy", "socks", "iv"];
-    if (!reserved.includes(handle.toLowerCase())) {
-      return `@${handle}`;
-    }
-  }
-  return null;
-}
-
-// Build ordered list of candidate chat targets from configured ID and Link
-function getChatTargetCandidates(idVal, linkVal) {
-  const candidates = [];
-  const addCandidate = (val) => {
-    if (!val) return;
-    const str = String(val).trim();
-    if (str && !candidates.includes(str)) {
-      candidates.push(str);
-    }
-  };
-
-  const rawId = String(idVal || "").trim();
-  const fromIdHandle = extractTelegramUsername(rawId);
-  if (fromIdHandle) {
-    addCandidate(fromIdHandle);
-  } else if (rawId) {
-    addCandidate(rawId);
-    // If admin entered positive supergroup ID without -100 prefix, add -100 fallback
-    if (/^\d{8,15}$/.test(rawId)) {
-      if (rawId.startsWith("100") && rawId.length >= 12) {
-        addCandidate(`-${rawId}`);
-      } else {
-        addCandidate(`-100${rawId}`);
-        addCandidate(`-${rawId}`);
-      }
-    }
-  }
-
-  const fromLinkHandle = extractTelegramUsername(linkVal);
-  if (fromLinkHandle) {
-    addCandidate(fromLinkHandle);
-  }
-
-  return candidates;
-}
-
 // Cached bot username
 let cachedBotUsername = null;
 async function getBotUsername(bot) {
@@ -115,27 +59,20 @@ async function verifyLiveMembership(bot, ctx, userId, forceRefresh = false) {
 
   const validStatuses = ["creator", "administrator", "member", "restricted"];
 
-  const checkSingleChat = async (idVal, linkVal) => {
-    const candidates = getChatTargetCandidates(idVal, linkVal);
-    if (candidates.length === 0) return true;
-
-    for (const chatTarget of candidates) {
-      try {
-        const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 3500));
-        const member = await Promise.race([bot.telegram.getChatMember(chatTarget, userId), timeout]);
-        if (member && member.status) {
-          return validStatuses.includes(member.status);
-        }
-      } catch (e) {
-        // Try next candidate
-      }
+  const checkSingleChat = async (chatId) => {
+    if (!chatId) return true;
+    try {
+      const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 3500));
+      const member = await Promise.race([bot.telegram.getChatMember(chatId, userId), timeout]);
+      return validStatuses.includes(member?.status);
+    } catch (e) {
+      return false;
     }
-    return false;
   };
 
   const [channelOk, groupOk] = await Promise.all([
-    checkSingleChat(settings.channel_id, settings.channel_link),
-    checkSingleChat(settings.group_id, settings.group_link)
+    checkSingleChat(settings.channel_id),
+    checkSingleChat(settings.group_id)
   ]);
 
   const result = { ok: channelOk && groupOk, channelOk, groupOk, ts: Date.now() };
@@ -178,28 +115,31 @@ function makeProgressBar(current, target) {
 function getMainMenuReplyKeyboard() {
   return Markup.keyboard([
     ["🛍️ Buy Products", "🔑 API Keys & Cloud"],
-    ["🎁 Free ChatGPT (30 Refs)", "👛 Wallet"],
+    ["🎁 Refer & Earn", "👛 Wallet"],
     ["📦 My Orders", "📊 Live Proofs", "📞 Support"]
   ]).resize();
 }
 
 function welcomeText(user) {
   const settings = getAllSettings();
-  const reqRefs = Number(settings.referrals_for_free_reward || 30);
+  const groupLink = settings.group_link || "https://t.me/RefferRewardes";
+  const channelLink = settings.channel_link || "https://t.me/RefferRewardss";
 
   return (
     `👋 Welcome, <b>${escapeHtml(user.first_name || "Friend")}</b>!\n` +
     `to <b>${escapeHtml(settings.bot_title || "Cloud & AI Resource Store")}</b> 🌐\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
-    `🤖 <b>AI Max & Pro Accounts:</b> Claude Max 20x, ChatGPT Pro 20x ($200 Tier), ChatGPT Shared (1M), Grok Heavy 1M, BytePlus Seedance 2.5\n` +
-    `☁️ <b>Cloud & Enterprise:</b> GCP $300 (USA / JSON Format), Azure PAYG (GPT T1–T5 & Claude T5), Azure $100K (10M TPM), AWS 5v (5 RPM & 50 RPM)\n` +
-    `🔑 <b>High-Quota Official API Keys:</b> Vertex/AI Studio Gemini, Claude Official Key, AWS Bedrock, OpenAI & Azure Keys\n` +
-    `📱 <b>Global eSIM & GV:</b> All-Country eSIM Cards & USA Google Voice Accounts\n` +
-    `🎁 <b>Referral Reward:</b> Invite <b>${reqRefs} friends</b> = Get <b>1 FREE ChatGPT Shared Account (1 Month)</b>!\n` +
-    `⚡️ <b>24/7 Automated Delivery:</b> USDT (BEP-20 & Polygon), Litecoin (LTC)${settings.binance_pay_enabled !== false ? " & Binance Pay" : ""} Supported\n` +
+    `🤖 <b>AI Max &amp; Pro Accounts:</b> Claude Max 20x, ChatGPT Pro 20x ($200 Tier), ChatGPT Shared (1M), Grok Heavy 1M, BytePlus Seedance 2.5\n` +
+    `☁️ <b>Cloud &amp; Enterprise:</b> GCP $300 (USA / JSON Format), Azure PAYG (GPT T1–T5 &amp; Claude T5), Azure $100K (10M TPM), AWS 5v (5 RPM &amp; 50 RPM)\n` +
+    `🔑 <b>High-Quota Official API Keys:</b> Vertex/AI Studio Gemini, Claude Official Key, AWS Bedrock, OpenAI &amp; Azure Keys\n` +
+    `📱 <b>Global eSIM &amp; GV:</b> All-Country eSIM Cards &amp; USA Google Voice Accounts\n` +
+    `⚡️ <b>24/7 Automated Delivery:</b> USDT (TRC-20, BEP-20 &amp; Polygon), Litecoin (LTC)${settings.binance_pay_enabled !== false ? " &amp; Binance Pay" : ""} Supported\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
-    `👛 <b>Your Wallet Balance:</b> <b>${money(user.wallet_balance || 0)}</b> | 👥 <b>Referrals:</b> <b>${user.referral_count || 0}/${reqRefs}</b>\n` +
-    `👇 <i>Choose an option from the menu below to browse & order:</i>`
+    `👥 <b>Our Community Group:</b> <a href="${groupLink}">${groupLink}</a>\n` +
+    `📢 <b>Official Channel:</b> <a href="${channelLink}">${channelLink}</a>\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `👛 <b>Your Wallet Balance:</b> <b>${money(user.wallet_balance || 0)}</b>\n` +
+    `👇 <i>Choose an option from the menu below to browse &amp; order:</i>`
   );
 }
 
@@ -252,8 +192,6 @@ module.exports = {
   escapeHtml,
   isAdmin,
   adminOnly,
-  extractTelegramUsername,
-  getChatTargetCandidates,
   getBotUsername,
   verifyLiveMembership,
   checkMembership,

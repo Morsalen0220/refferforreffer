@@ -30,8 +30,6 @@ const {
   escapeHtml,
   adminOnly,
   isAdmin,
-  extractTelegramUsername,
-  getChatTargetCandidates,
   renderUserProfile,
   getBotUsername
 } = require("../helpers");
@@ -358,17 +356,37 @@ function registerAdminHandlers(bot) {
 
     if (pending.length === 0) {
       await ctx.answerCbQuery();
+      if (ctx.callbackQuery?.message && !ctx.callbackQuery.message.text) {
+        try {
+          await ctx.deleteMessage();
+        } catch (e) {}
+        return ctx.reply("📥 No pending wallet deposits.", {
+          ...Markup.inlineKeyboard([[Markup.button.callback("🔙 Back", "adm:menu")]])
+        });
+      }
       return ctx.editMessageText("📥 No pending wallet deposits.", {
         ...Markup.inlineKeyboard([[Markup.button.callback("🔙 Back", "adm:menu")]])
       });
     }
 
     const buttons = pending.slice(0, 10).map((d) => [
-      Markup.button.callback(`${d.id} • ${money(d.amount)} (${d.method})`, `adm_view_dep:${d.id}`)
+      Markup.button.callback(
+        `${d.photo_file_id ? "📸" : "🔢"} ${d.id} • ${money(d.amount)} (${d.method})`,
+        `adm_view_dep:${d.id}`
+      )
     ]);
     buttons.push([Markup.button.callback("🔙 Back to Dashboard", "adm:menu")]);
 
     await ctx.answerCbQuery();
+    if (ctx.callbackQuery?.message && !ctx.callbackQuery.message.text) {
+      try {
+        await ctx.deleteMessage();
+      } catch (e) {}
+      return ctx.reply(`📥 <b>Pending Wallet Deposits (${pending.length}):</b>`, {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard(buttons)
+      });
+    }
     await ctx.editMessageText(`📥 <b>Pending Wallet Deposits (${pending.length}):</b>`, {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard(buttons)
@@ -383,20 +401,42 @@ function registerAdminHandlers(bot) {
     const text =
       `📥 <b>DEPOSIT DETAILS: <code>${dep.id}</code></b>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
-      `👤 <b>User ID:</b> <code>${dep.user_id}</code>\n` +
+      `👤 <b>User ID:</b> <code>${dep.user_id}</code> (${escapeHtml(dep.user_name || "Buyer")})\n` +
       `💵 <b>Amount:</b> <b>${money(dep.amount)}</b>\n` +
       `⚡️ <b>Method:</b> ${dep.method}\n` +
-      `📝 <b>Proof:</b> <code>${escapeHtml(dep.proof || "N/A")}</code>\n` +
+      `📸 <b>Proof Type:</b> <b>${dep.photo_file_id ? "Screenshot Image Attached" : "Text TxID / Order ID"}</b>\n` +
+      `📝 <b>Proof / Caption:</b> <code>${escapeHtml(dep.proof || "N/A")}</code>\n` +
       `🕒 <b>Date:</b> ${new Date(dep.created_at).toLocaleString()}`;
 
-    const kb = Markup.inlineKeyboard([
+    const kbRows = [
       [Markup.button.callback(`✅ Approve & Credit ${money(dep.amount)}`, `adm_dep_app:${dep.id}`)],
       [Markup.button.callback("❌ Reject Deposit", `adm_dep_rej:${dep.id}`)],
-      [Markup.button.callback("🔙 Back", "adm:deposits")]
-    ]);
+      [Markup.button.callback("📩 Message Buyer", `adm_user_dm:${dep.user_id}`)],
+      [Markup.button.callback("🔙 Back to Pending Deposits", "adm:deposits")]
+    ];
+    const kb = Markup.inlineKeyboard(kbRows);
 
     await ctx.answerCbQuery();
-    await ctx.editMessageText(text, { parse_mode: "HTML", ...kb });
+    if (dep.photo_file_id) {
+      try {
+        await ctx.deleteMessage();
+      } catch (e) {}
+      try {
+        return await ctx.replyWithPhoto(dep.photo_file_id, {
+          caption: text,
+          parse_mode: "HTML",
+          ...kb
+        });
+      } catch (err) {
+        return await ctx.reply(text, { parse_mode: "HTML", ...kb });
+      }
+    }
+
+    try {
+      await ctx.editMessageText(text, { parse_mode: "HTML", ...kb });
+    } catch (e) {
+      await ctx.reply(text, { parse_mode: "HTML", ...kb });
+    }
   });
 
   bot.action(/^adm_dep_app:(.+)$/, async (ctx) => {
@@ -406,13 +446,29 @@ function registerAdminHandlers(bot) {
     try {
       const { deposit, user } = approveDeposit(depId);
       await ctx.answerCbQuery("Deposit approved & credited!");
-      await ctx.editMessageText(
+      const approvedText =
         `✅ <b>Deposit <code>${depId}</code> Approved!</b>\n` +
-        `User: <code>${deposit.user_id}</code>\n` +
-        `Credited: <b>+${money(deposit.amount)}</b>\n` +
-        `New Wallet Balance: <b>${money(user?.wallet_balance || 0)}</b>`,
-        { parse_mode: "HTML" }
-      );
+        `👤 <b>User:</b> <code>${deposit.user_id}</code>\n` +
+        `💵 <b>Credited:</b> <b>+${money(deposit.amount)}</b>\n` +
+        `👛 <b>New Wallet Balance:</b> <b>${money(user?.wallet_balance || 0)}</b>`;
+
+      const backKb = Markup.inlineKeyboard([
+        [Markup.button.callback("📥 Pending Deposits", "adm:deposits"), Markup.button.callback("👑 Dashboard", "adm:menu")]
+      ]);
+
+      if (ctx.callbackQuery?.message && !ctx.callbackQuery.message.text) {
+        try {
+          await ctx.editMessageCaption(approvedText, { parse_mode: "HTML", ...backKb });
+        } catch (e) {
+          await ctx.reply(approvedText, { parse_mode: "HTML", ...backKb });
+        }
+      } else {
+        try {
+          await ctx.editMessageText(approvedText, { parse_mode: "HTML", ...backKb });
+        } catch (e) {
+          await ctx.reply(approvedText, { parse_mode: "HTML", ...backKb });
+        }
+      }
 
       bot.telegram.sendMessage(
         deposit.user_id,
@@ -428,7 +484,7 @@ function registerAdminHandlers(bot) {
       ).catch(() => {});
 
       const settings = getAllSettings();
-      if (settings.group_id || settings.group_link) {
+      if (settings.group_id) {
         sendGroupDepositNotice(user?.first_name || "Verified Buyer", deposit.amount).catch(() => {});
       }
     } catch (err) {
@@ -457,13 +513,12 @@ function registerAdminHandlers(bot) {
       `🏷️ <b>Store Title:</b> ${escapeHtml(s.bot_title || "Cloud & AI Resource Store")}\n` +
       `🟡 <b>Binance Pay Deposit:</b> ${bpayEnabled ? "✅ ON (Enabled)" : "❌ OFF (Hidden)"}\n` +
       `🆔 <b>Binance Pay ID:</b> <code>${s.binance_pay_id || "None"}</code>\n` +
+      `🔴 <b>TRC20 USDT Address:</b> <code>${(s.trc20_usdt_address || "TGeB...").slice(0, 14)}...</code>\n` +
       `🟢 <b>BEP20 USDT Address:</b> <code>${s.bep20_usdt_address?.slice(0, 12)}...</code>\n` +
       `🟣 <b>Polygon USDT Address:</b> <code>${s.polygon_usdt_address?.slice(0, 12)}...</code>\n` +
       `⚪️ <b>Litecoin (LTC) Address:</b> <code>${(s.ltc_address || "ltc1q...").slice(0, 14)}...</code>\n` +
-      `📢 <b>Channel ID:</b> <code>${escapeHtml(s.channel_id || "Not Set")}</code>\n` +
-      `📢 <b>Channel Link:</b> <a href="${escapeHtml(s.channel_link || "https://t.me/")}">${escapeHtml(s.channel_link_text || "Join Official Channel")}</a>\n` +
-      `👥 <b>Group ID:</b> <code>${escapeHtml(s.group_id || "Not Set")}</code>\n` +
-      `👥 <b>Group Link:</b> <a href="${escapeHtml(s.group_link || "https://t.me/")}">${escapeHtml(s.group_link_text || "Join Community Group")}</a>\n` +
+      `📢 <b>Channel:</b> ${s.channel_link}\n` +
+      `👥 <b>Group:</b> ${s.group_link}\n` +
       `📞 <b>Support Admin:</b> ${escapeHtml(s.support_username || "@Morsalen0220")}\n` +
       `🔒 <b>Force Join:</b> ${s.force_join_enabled ? "✅ ON" : "❌ OFF"}\n` +
       `📢 <b>Group Auto-Poster:</b> ${s.auto_broadcast_enabled !== false ? "✅ ON" : "❌ OFF"}\n` +
@@ -479,22 +534,21 @@ function registerAdminHandlers(bot) {
       ],
       [
         Markup.button.callback("🟡 Binance Pay ID", "adm_set:binance_pay_id"),
-        Markup.button.callback("⚪️ LTC Address", "adm_set:ltc_address")
+        Markup.button.callback("🔴 TRC20 USDT", "adm_set:trc20_usdt_address")
       ],
       [
         Markup.button.callback("🟢 BEP20 USDT", "adm_set:bep20_usdt_address"),
         Markup.button.callback("🟣 Polygon USDT", "adm_set:polygon_usdt_address")
       ],
       [
-        Markup.button.callback("🏷️ Store Title", "adm_set:bot_title"),
+        Markup.button.callback("⚪️ LTC Address", "adm_set:ltc_address"),
         Markup.button.callback("📞 Support Handle", "adm_set:support_username")
       ],
       [
-        Markup.button.callback("📢 Channel ID", "adm_set:channel_id"),
-        Markup.button.callback("👥 Group ID", "adm_set:group_id")
+        Markup.button.callback("🏷️ Store Title", "adm_set:bot_title"),
+        Markup.button.callback("📢 Channel Link", "adm_set:channel_link")
       ],
       [
-        Markup.button.callback("📢 Channel Link", "adm_set:channel_link"),
         Markup.button.callback("👥 Group Link", "adm_set:group_link")
       ],
       [
@@ -504,21 +558,14 @@ function registerAdminHandlers(bot) {
       [Markup.button.callback("🔙 Back to Dashboard", "adm:menu")]
     ]);
 
-    const extra = {
-      parse_mode: "HTML",
-      disable_web_page_preview: true,
-      link_preview_options: { is_disabled: true },
-      ...kb
-    };
-
     if (ctx.callbackQuery) {
       try {
-        return await ctx.editMessageText(text, extra);
+        return await ctx.editMessageText(text, { parse_mode: "HTML", ...kb });
       } catch (e) {
-        return await ctx.reply(text, extra);
+        return await ctx.reply(text, { parse_mode: "HTML", ...kb });
       }
     }
-    return await ctx.reply(text, extra);
+    return await ctx.reply(text, { parse_mode: "HTML", ...kb });
   }
 
   bot.action("adm:settings", async (ctx) => {
@@ -540,21 +587,6 @@ function registerAdminHandlers(bot) {
     const key = ctx.match[1];
     ctx.session.adminAction = { type: "set_setting", key };
     await ctx.answerCbQuery();
-
-    if (key === "group_link" || key === "channel_link") {
-      const label = key === "group_link" ? "Group" : "Channel";
-      const defaultText = key === "group_link" ? "Join Community Group" : "Join Official Channel";
-      return await ctx.reply(
-        `✏️ <b>Update ${label} Hyperlink:</b>\n\n` +
-        `• <b>শুধু লিংক দিলে:</b> <code>https://t.me/YourLink</code> (অটোমেটিক <b>"${defaultText}"</b> লেখার ভেতর লিংক লুকানো থাকবে)\n` +
-        `• <b>কাস্টম লেখাসহ হাইপারলিংক দিতে চাইলে:</b>\n` +
-        `<code>Click Here | https://t.me/YourLink</code>\n` +
-        `অথবা <code>[Click Here](https://t.me/YourLink)</code>\n\n` +
-        `<i>Type /cancel to cancel.</i>`,
-        { parse_mode: "HTML", disable_web_page_preview: true }
-      );
-    }
-
     await ctx.reply(`✏️ <b>Enter new value for <code>${key}</code>:</b>\n\n<i>Type /cancel to cancel.</i>`, { parse_mode: "HTML" });
   });
 
@@ -773,123 +805,309 @@ function registerAdminHandlers(bot) {
     await showPromoCatalogMenu(ctx);
   });
 
+  bot.action(/^adm_promo_cat:(.+)$/, async (ctx) => {
+    if (!adminOnly(ctx)) return;
+    await ctx.answerCbQuery();
+    await showPromoCatalogMenu(ctx, ctx.match[1]);
+  });
+
   bot.action(/^adm_promo_view:([^:]+):(\d+)$/, async (ctx) => {
     if (!adminOnly(ctx)) return;
     await ctx.answerCbQuery();
     await showPromoTemplateView(bot, ctx, ctx.match[1], Number(ctx.match[2]));
   });
 
-  bot.action(/^adm_promo_send:(grp|chn):([^:]+):(\d+)$/, async (ctx) => {
+  bot.action(/^adm_promo_copy:([^:]+):(\d+)$/, async (ctx) => {
     if (!adminOnly(ctx)) return;
-    const dest = ctx.match[1]; // 'grp' | 'chn'
+    await ctx.answerCbQuery("📋 Ready-to-copy promo sent below!");
+    const targetId = ctx.match[1];
+    const postNum = Number(ctx.match[2]);
+    const botUsername = await getBotUsername(bot);
+    const storeLink = `https://t.me/${botUsername}`;
+    const settings = getAllSettings();
+    const templates = buildPromoTemplates(targetId, storeLink, settings);
+    const chosen = templates[postNum - 1] || templates[0];
+    await ctx.reply(chosen.htmlText, {
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+      ...Markup.inlineKeyboard([[Markup.button.url("🛒 Buy Instantly in Bot", storeLink)]])
+    });
+  });
+
+  bot.action(/^adm_promo_send:(grp|chn|all_users):([^:]+):(\d+)$/, async (ctx) => {
+    if (!adminOnly(ctx)) return;
+    const dest = ctx.match[1]; // 'grp' | 'chn' | 'all_users'
     const targetId = ctx.match[2];
     const postNum = Number(ctx.match[3]);
 
     const settings = getAllSettings();
-    const candidates =
-      dest === "grp"
-        ? getChatTargetCandidates(settings.group_id, settings.group_link)
-        : getChatTargetCandidates(settings.channel_id, settings.channel_link);
-
-    if (candidates.length === 0) {
-      return ctx.answerCbQuery(`❌ No ${dest === "grp" ? "Group" : "Channel"} ID or link configured in settings!`, {
-        show_alert: true
-      });
-    }
-
     const botUsername = await getBotUsername(bot);
     const storeLink = `https://t.me/${botUsername}`;
     const templates = buildPromoTemplates(targetId, storeLink, settings);
     const chosen = templates[postNum - 1] || templates[0];
 
-    let lastErr = "Unknown error";
-    for (const chatTarget of candidates) {
-      try {
-        const res = await bot.telegram.sendMessage(chatTarget, chosen.htmlText, {
-          parse_mode: "HTML",
-          disable_web_page_preview: true,
-          link_preview_options: { is_disabled: true },
-          ...Markup.inlineKeyboard([[Markup.button.url("🛒 Buy Instantly in Bot", storeLink)]])
-        });
-        if (res?.chat?.id) {
-          setSetting(dest === "grp" ? "group_id" : "channel_id", String(res.chat.id));
-        }
-        return await ctx.answerCbQuery(`✅ Promo Post #${postNum} published to ${dest === "grp" ? "Group" : "Channel"}!`, {
-          show_alert: true
-        });
-      } catch (err) {
-        lastErr = err.message || String(err);
+    if (dest === "all_users") {
+      const users = getAllUsers();
+      await ctx.answerCbQuery(`📢 Broadcasting Promo #${postNum} to ${users.length} users...`);
+      let sent = 0;
+      for (const u of users) {
+        try {
+          await bot.telegram.sendMessage(u.id, chosen.htmlText, {
+            parse_mode: "HTML",
+            disable_web_page_preview: true,
+            ...Markup.inlineKeyboard([[Markup.button.url("🛒 Buy Instantly in Bot", storeLink)]])
+          });
+          sent++;
+          await new Promise((r) => setTimeout(r, 40));
+        } catch (e) {}
       }
-    }
-
-    await ctx.answerCbQuery(`❌ Failed to post: ${lastErr}`, { show_alert: true });
-  });
-
-  // Quick command in any Group or Channel to bind it as the active Group/Channel
-  bot.command("setgroup", async (ctx) => {
-    if (!isAdmin(ctx)) return;
-    if (ctx.chat && (ctx.chat.type === "group" || ctx.chat.type === "supergroup")) {
-      setSetting("group_id", String(ctx.chat.id));
-      if (ctx.chat.username) {
-        setSetting("group_link", `https://t.me/${ctx.chat.username}`);
-      }
-      await ctx.reply(`✅ Group connected! Active <code>group_id</code> set to <code>${ctx.chat.id}</code>.`, {
+      await ctx.reply(`✅ Promo Post #${postNum} broadcasted to <b>${sent} / ${users.length}</b> registered users!`, {
         parse_mode: "HTML"
       });
+      return;
     }
-  });
 
-  // Automatically detect when bot is added to a Group or Channel and save its Chat ID
-  bot.on("my_chat_member", async (ctx) => {
+    const chatId = dest === "grp" ? settings.group_id : settings.channel_id;
+    if (!chatId) {
+      return ctx.answerCbQuery(`❌ No ${dest === "grp" ? "group_id" : "channel_id"} configured in settings!`, {
+        show_alert: true
+      });
+    }
+
     try {
-      const chat = ctx.myChatMember?.chat;
-      const newStatus = ctx.myChatMember?.new_chat_member?.status;
-      if (!chat || !["member", "administrator"].includes(newStatus)) return;
-
-      if (chat.type === "group" || chat.type === "supergroup") {
-        setSetting("group_id", String(chat.id));
-        if (chat.username) {
-          setSetting("group_link", `https://t.me/${chat.username}`);
-        }
-        console.log(`✅ Auto-connected Group: ${chat.title} (${chat.id})`);
-      } else if (chat.type === "channel") {
-        setSetting("channel_id", String(chat.id));
-        if (chat.username) {
-          setSetting("channel_link", `https://t.me/${chat.username}`);
-        }
-        console.log(`✅ Auto-connected Channel: ${chat.title} (${chat.id})`);
-      }
-    } catch (e) {}
+      await bot.telegram.sendMessage(chatId, chosen.htmlText, {
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+        ...Markup.inlineKeyboard([[Markup.button.url("🛒 Buy Instantly in Bot", storeLink)]])
+      });
+      await ctx.answerCbQuery(`✅ Promo Post #${postNum} published to ${dest === "grp" ? "Group" : "Channel"}!`, {
+        show_alert: true
+      });
+    } catch (err) {
+      await ctx.answerCbQuery(`❌ Failed to post: ${err.message}`, { show_alert: true });
+    }
   });
 }
 
 // =====================================================
-// PROMO GENERATOR (2 POSTS FOR ALL PRODUCTS + 2 POSTS PER PRODUCT)
+// PROMO GENERATOR (BEAUTIFULLY ORGANIZED FOR ALL PRODUCTS & CATEGORIES)
 // =====================================================
-async function showPromoCatalogMenu(ctx) {
+const PROMO_CATEGORY_META = {
+  ai_sub: { icon: "🤖", label: "AI Max & Pro Subscriptions", short: "AI Subscriptions" },
+  cloud_acc: { icon: "☁️", label: "Cloud Trial & Enterprise Accounts", short: "Cloud Accounts" },
+  api_key: { icon: "🔑", label: "High-Quota Official API Keys", short: "Official API Keys" },
+  esim_tools: { icon: "📱", label: "Global eSIM & Google Voice (GV)", short: "eSIM & Google Voice" }
+};
+
+const PRODUCT_MARKETING_HOOKS = {
+  claude_max_20x: {
+    badge: "👑 #1 BESTSELLER AI SUB",
+    headline: "CLAUDE MAX 20X — OFFICIAL FINISHED ACCOUNT",
+    subhook: "Unleash 20x higher usage limits on Claude 3.7 Sonnet & Opus without rate-limit interruptions!",
+    useCases: "Full-stack coding, heavy codebase architecture, research & agency workflows."
+  },
+  chatgpt_pro_20x: {
+    badge: "🚀 $200/MO TIER UNLOCKED",
+    headline: "CHATGPT PRO 20X ($200 TIER FINISHED ACCOUNT)",
+    subhook: "Unlimited access to OpenAI o1-pro, GPT-4o, Advanced Voice & Sora video generation!",
+    useCases: "Deep reasoning, enterprise research, AI engineering & unlimited daily prompts."
+  },
+  chatgpt_shared_1m: {
+    badge: "🔥 BUDGET & FREE REWARD PICK",
+    headline: "CHATGPT PLUS/PRO SHARED ACCOUNT (30 DAYS)",
+    subhook: "Enjoy premium GPT-4o, o1 & DALL-E 3 at a fraction of the price — or claim 100% FREE with 30 referrals!",
+    useCases: "Students, daily productivity, copywriting & image generation."
+  },
+  grok_heavy_1m: {
+    badge: "⚡️ UNRESTRICTED SUPERGROK",
+    headline: "GROK HEAVY / SUPERGROK 1-MONTH SUBSCRIPTION",
+    subhook: "Real-time DeepSearch, Think Mode & unfiltered high-speed AI generation!",
+    useCases: "Real-time market analysis, viral content creation & deep reasoning."
+  },
+  byteplus_seedance: {
+    badge: "🎬 ENTERPRISE AI VIDEO",
+    headline: "BYTEPLUS SEEDANCE 2.5 ENTERPRISE SUBSCRIPTION",
+    subhook: "US Corporate verified account with high-tier Seedance 2.5 AI video & model quota!",
+    useCases: "AI video studios, commercial generation & high-volume media teams."
+  },
+  gcp_300_usa: {
+    badge: "☁️ USA CLEAN IP CLOUD",
+    headline: "GOOGLE CLOUD PLATFORM (GCP) $300 CREDIT ACCOUNT",
+    subhook: "Fresh $300 USD Free Trial on clean USA IP — supports Vertex AI (Gemini/Claude) & Compute VMs!",
+    useCases: "Vertex AI model deployment, cloud VPS/RDP, Kubernetes & API hosting."
+  },
+  gcp_300_json: {
+    badge: "🔌 PLUG & PLAY VERTEX JSON",
+    headline: "GCP $300 CREDIT + READY JSON SERVICE ACCOUNT KEY",
+    subhook: "Pre-configured JSON key ready for immediate Vertex AI Gemini & Claude API calls!",
+    useCases: "Developers needing zero-setup JSON credentials + full console access."
+  },
+  azure_payg_gpt: {
+    badge: "🌍 MULTI-REGION PAYG",
+    headline: "AZURE PAY-AS-YOU-GO (GPT T1–T5 ALL MODELS)",
+    subhook: "Active Azure PAYG billing with unlocked OpenAI GPT-4o, o1 & GPT-4 Turbo across regions!",
+    useCases: "Production SaaS apps, high-concurrency chatbots & enterprise AI pipelines."
+  },
+  azure_claude_t5: {
+    badge: "💎 TIER-5 ENTERPRISE QUOTA",
+    headline: "AZURE PAY-AS-YOU-GO — CLAUDE TIER-5 ACCESS",
+    subhook: "Maximum enterprise RPM/TPM rate limits for uninterrupted production Claude workloads!",
+    useCases: "High-traffic AI agents, coding platforms & enterprise API consumers."
+  },
+  azure_ft_200: {
+    badge: "💻 RDP & CLOUD STARTER",
+    headline: "MICROSOFT AZURE FREE TRIAL ($200 USD CREDIT)",
+    subhook: "Fresh $200 Azure credit with clean IP & verified billing — spin up Windows/Linux VMs in minutes!",
+    useCases: "Windows RDP, Linux VPS servers, cloud hosting & AI sandbox testing."
+  },
+  azure_100k_10m: {
+    badge: "🏛️ $100,000 ENTERPRISE TITAN",
+    headline: "AZURE $100K CREDIT ACCOUNT (10M TPM QUOTA)",
+    subhook: "Full administrative ownership transfer with $100,000 USD credit & 10 Million TPM throughput!",
+    useCases: "Large AI startups, LLM aggregators & ultra-scale production clusters."
+  },
+  aws_5v_5rpm: {
+    badge: "📦 BEDROCK AI READY",
+    headline: "AWS CLOUD 5vCPU ACCOUNT (5 RPM BEDROCK QUOTA)",
+    subhook: "Root AWS console + IAM keys with EC2 & Amazon Bedrock AI models pre-enabled!",
+    useCases: "Cloud compute instances, Bedrock Claude testing & automated scripts."
+  },
+  aws_5v_50rpm: {
+    badge: "🚀 50 RPM HIGH-CONCURRENCY",
+    headline: "AWS CLOUD 5vCPU (50 RPM HIGH-SPEED BEDROCK)",
+    subhook: "10x higher invocation speed (50 RPM) for heavy Amazon Bedrock Claude & EC2 workloads!",
+    useCases: "High-speed AI inference, multi-user coding tools & production servers."
+  },
+  vertex_gemini_key: {
+    badge: "✨ PAID-TIER GEMINI KEY",
+    headline: "VERTEX AI / AI STUDIO GEMINI PRO OFFICIAL API KEY",
+    subhook: "High RPM/TPM paid-tier key for Gemini 1.5 Pro & 2.0 Flash/Pro — plug straight into Cursor & Cline!",
+    useCases: "Cursor IDE, Cline, Roo-Code, Python/Node.js SDKs & multimodal apps."
+  },
+  claude_high_key: {
+    badge: "🔥 200K CONTEXT OFFICIAL KEY",
+    headline: "CLAUDE 3.5 / 3.7 SONNET HIGH-QUOTA OFFICIAL API KEY",
+    subhook: "Official sk-ant-* high-quota key with full 200K context window & top-tier rate limits!",
+    useCases: "Cursor, Claude Code, Cline, SillyTavern & automated code generation."
+  },
+  aws_bedrock_key: {
+    badge: "🛡️ ZERO-BAN BEDROCK KEY",
+    headline: "AWS BEDROCK (AWSB) HIGH-QUOTA CLAUDE API CREDENTIALS",
+    subhook: "Unrestricted Claude 3.5/3.7 Sonnet & Opus throughput via official AWS Bedrock endpoints!",
+    useCases: "Developers wanting rock-solid AWS SLA stability with zero random bans."
+  },
+  openai_official_key: {
+    badge: "⚡ OFFICIAL SK-* HIGH TIER",
+    headline: "OPENAI OFFICIAL HIGH-QUOTA API KEY (GPT-4o / o1 / o3)",
+    subhook: "Pre-funded official OpenAI API key compatible with every OpenAI SDK & AI client!",
+    useCases: "NextChat, LibreChat, Cursor, custom GPT agents & production backends."
+  },
+  azure_official_key: {
+    badge: "🏢 ENTERPRISE SLA ENDPOINT",
+    headline: "AZURE OPENAI OFFICIAL API KEY + ENDPOINT URL",
+    subhook: "Low-latency enterprise GPT-4o & o1 deployment with dedicated endpoint & API key!",
+    useCases: "Privacy-first enterprise apps, high-uptime bots & commercial SaaS."
+  },
+  global_esim: {
+    badge: "🌍 10+ COUNTRIES QR ESIM",
+    headline: "GLOBAL eSIM CARD (US / UK / CA / JP / AU / EU / IN / TW)",
+    subhook: "Instant QR code activation for international SMS verification & roaming data on any eSIM phone!",
+    useCases: "Cloud/AI account verification, international travel & global OTP reception."
+  },
+  google_voice_gv: {
+    badge: "📱 AGED USA PERMANENT #",
+    headline: "GOOGLE VOICE (GV) AGED USA NUMBER ACCOUNT",
+    subhook: "Clean, permanent USA phone number with full Gmail access for seamless SMS & Call verification!",
+    useCases: "Registering AI platforms, cloud trials, social media & US business services."
+  }
+};
+
+async function showPromoCatalogMenu(ctx, selectedCat = null) {
   const products = getAllProducts();
+  const inStockCount = products.filter((p) => !p.outOfStock && (p.stock || 0) > 0).length;
+
+  if (!selectedCat) {
+    const aiCount = products.filter((p) => p.category === "ai_sub").length;
+    const cloudCount = products.filter((p) => p.category === "cloud_acc").length;
+    const keyCount = products.filter((p) => p.category === "api_key").length;
+    const esimCount = products.filter((p) => p.category === "esim_tools").length;
+
+    const text =
+      `🚀 <b>ADMIN MARKETING &amp; PROMO STUDIO</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `📦 <b>Total Store Catalog:</b> <b>${products.length} Products</b> (🟢 ${inStockCount} In Stock)\n` +
+      `✨ <b>Ready-to-Post Formats:</b>\n` +
+      `• 🌟 <b>Full Store Megaposts:</b> 3 High-Converting All-in-One Catalog Ads\n` +
+      `• 📂 <b>Category Promo Packs:</b> Dedicated Ads for AI, Cloud, API Keys &amp; eSIM\n` +
+      `• 🏷️ <b>Individual Product Ads:</b> 3 Custom Marketing Posts for Every Single Product\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `👇 <i>Choose a marketing pack or browse by category below:</i>`;
+
+    const rows = [
+      [Markup.button.callback("🌟 All Products Mega Promo (3 Full-Catalog Posts)", "adm_promo_view:all:1")],
+      [
+        Markup.button.callback(`🤖 AI Subscriptions (${aiCount})`, "adm_promo_cat:ai_sub"),
+        Markup.button.callback(`☁️ Cloud Accounts (${cloudCount})`, "adm_promo_cat:cloud_acc")
+      ],
+      [
+        Markup.button.callback(`🔑 Official API Keys (${keyCount})`, "adm_promo_cat:api_key"),
+        Markup.button.callback(`📱 eSIM & GV (${esimCount})`, "adm_promo_cat:esim_tools")
+      ],
+      [Markup.button.callback(`📋 List All ${products.length} Individual Products`, "adm_promo_cat:all_list")],
+      [Markup.button.callback("🔙 Back to Admin Dashboard", "adm:menu")]
+    ];
+
+    const kb = Markup.inlineKeyboard(rows);
+    if (ctx.callbackQuery) {
+      try {
+        return await ctx.editMessageText(text, { parse_mode: "HTML", ...kb });
+      } catch (e) {
+        return await ctx.reply(text, { parse_mode: "HTML", ...kb });
+      }
+    }
+    return await ctx.reply(text, { parse_mode: "HTML", ...kb });
+  }
+
+  const isAllList = selectedCat === "all_list";
+  const catMeta = PROMO_CATEGORY_META[selectedCat] || { icon: "📋", label: "All Store Products", short: "All Products" };
+  const filtered = isAllList ? products : products.filter((p) => p.category === selectedCat);
 
   const text =
-    `🚀 <b>PROMO POSTS MANAGER (ADMIN)</b>\n` +
+    `${catMeta.icon} <b>PROMO STUDIO: ${catMeta.label.toUpperCase()}</b>\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
-    `• <b>🌟 All Products Promo:</b> 2 Ready Full-Catalog Posts\n` +
-    `• <b>📦 Individual Products (${products.length}):</b> 2 Ready Posts for Every Product (based on live price &amp; bulk rate)\n\n` +
-    `👇 <i>Select <b>All Products Promo</b> or any product below to view, copy, or 1-click post to Group/Channel:</i>`;
+    `📦 <b>Products in Section:</b> <b>${filtered.length}</b>\n` +
+    `💡 <i>Tap the Category Megapost or select any product below to generate 3 high-converting marketing ads (with live prices, bulk discounts &amp; 1-click Group/Channel/DM publishing):</i>`;
 
-  const rows = [
-    [Markup.button.callback("🌟 All Products Promo (2 Ready Posts)", "adm_promo_view:all:1")]
-  ];
-
-  products.forEach((p) => {
+  const rows = [];
+  if (!isAllList && PROMO_CATEGORY_META[selectedCat]) {
     rows.push([
       Markup.button.callback(
-        `📦 ${p.name.slice(0, 28)} ($${Number(p.price).toFixed(0)}) • 2 Posts`,
+        `🌟 ${catMeta.short} — Category Mega Promo (2 Posts)`,
+        `adm_promo_view:cat_${selectedCat}:1`
+      )
+    ]);
+  } else {
+    rows.push([
+      Markup.button.callback("🌟 All Products Mega Promo (3 Posts)", "adm_promo_view:all:1")
+    ]);
+  }
+
+  filtered.forEach((p) => {
+    const bulk = getUnitPrice(p, 5);
+    const bulkTag = bulk < p.price ? ` • Bulk $${bulk.toFixed(0)}` : "";
+    const statusDot = p.outOfStock || (p.stock || 0) <= 0 ? "🔴" : "🟢";
+    rows.push([
+      Markup.button.callback(
+        `${statusDot} ${p.name.slice(0, 27)} ($${Number(p.price).toFixed(2)}${bulkTag})`,
         `adm_promo_view:${p.id}:1`
       )
     ]);
   });
 
-  rows.push([Markup.button.callback("🔙 Back to Admin Dashboard", "adm:menu")]);
+  rows.push([
+    Markup.button.callback("🔙 Promo Categories", "adm:promos"),
+    Markup.button.callback("👑 Admin Dashboard", "adm:menu")
+  ]);
 
   const kb = Markup.inlineKeyboard(rows);
   if (ctx.callbackQuery) {
@@ -904,108 +1122,351 @@ async function showPromoCatalogMenu(ctx) {
 
 function buildPromoTemplates(targetId, storeLink, settings) {
   const products = getAllProducts();
-  const payMethods = `USDT (BEP-20 / Polygon), Litecoin (LTC)${settings.binance_pay_enabled !== false ? " & Binance Pay" : ""}`;
+  const payMethods = `USDT (TRC-20 / BEP-20 / Polygon), Litecoin (LTC)${settings.binance_pay_enabled !== false ? " & Binance Pay (0% Fee)" : ""}`;
+  const supportHandle = settings.support_username || "@Morsalen0220";
+  const channelLink = settings.channel_link || "https://t.me/RefferRewardss";
+  const groupLink = settings.group_link || "https://t.me/RefferRewardes";
 
+  const fmtCatalogLine = (p) => {
+    const unit = Number(p.price).toFixed(2);
+    const bulk = getUnitPrice(p, 5);
+    const bulkStr = bulk < p.price ? ` <i>(5+ Bulk: $${bulk.toFixed(2)})</i>` : "";
+    return `▫️ <b>${escapeHtml(p.name)}</b> — <b>$${unit}</b>${bulkStr}`;
+  };
+
+  const fmtPlainLine = (p) => {
+    const unit = Number(p.price).toFixed(2);
+    const bulk = getUnitPrice(p, 5);
+    const bulkStr = bulk < p.price ? ` (Bulk 5+: $${bulk.toFixed(2)})` : "";
+    return `• ${p.name} — $${unit}${bulkStr}`;
+  };
+
+  // 1. ALL PRODUCTS FULL-CATALOG MEGAPOSTS (3 VARIATIONS)
   if (targetId === "all") {
     const aiProds = products.filter((p) => p.category === "ai_sub");
     const cloudProds = products.filter((p) => p.category === "cloud_acc");
     const keyProds = products.filter((p) => p.category === "api_key");
     const esimProds = products.filter((p) => p.category === "esim_tools");
 
-    const fmtLine = (p) => {
-      const bulk = getUnitPrice(p, 5);
-      const bulkStr = bulk < p.price ? ` (Bulk 5+: $${bulk.toFixed(2)})` : "";
-      return `• ${p.name} — $${Number(p.price).toFixed(2)}${bulkStr}`;
-    };
-
     const post1Plain =
-`🔥 OFFICIAL CLOUD & AI RESOURCE STORE — FULL CATALOG 🔥
+`👑 OFFICIAL CLOUD & AI RESOURCE STORE — FULL CATALOG 👑
 ━━━━━━━━━━━━━━━━━━━━
-🤖 AI Max & Pro Subscriptions:
-${aiProds.map(fmtLine).join("\n")}
+🤖 AI MAX & PRO SUBSCRIPTIONS:
+${aiProds.map(fmtPlainLine).join("\n")}
 
-☁️ Cloud Trial & Enterprise Accounts:
-${cloudProds.map(fmtLine).join("\n")}
+☁️ CLOUD TRIAL & ENTERPRISE ACCOUNTS:
+${cloudProds.map(fmtPlainLine).join("\n")}
 
-🔑 High-Quota Official API Keys:
-${keyProds.map(fmtLine).join("\n")}
+🔑 HIGH-QUOTA OFFICIAL API KEYS:
+${keyProds.map(fmtPlainLine).join("\n")}
 
-📱 Global eSIM & Verification:
-${esimProds.map(fmtLine).join("\n")}
+📱 GLOBAL eSIM & VERIFICATION TOOLS:
+${esimProds.map(fmtPlainLine).join("\n")}
 ━━━━━━━━━━━━━━━━━━━━
+🎁 BONUS: Invite 30 Friends = 1 FREE ChatGPT Shared Account (1M)!
 💳 Payment: ${payMethods}
-⚡️ 24/7 Instant Automated Delivery via Bot:
+📞 24/7 Support: ${supportHandle}
+⚡️ Instant Automated Delivery via Bot:
+👉 ${storeLink}`;
+
+    const post1Html =
+`👑 <b>OFFICIAL CLOUD &amp; AI RESOURCE STORE — FULL CATALOG</b> 👑
+━━━━━━━━━━━━━━━━━━━━
+🤖 <b>AI MAX &amp; PRO SUBSCRIPTIONS:</b>
+${aiProds.map(fmtCatalogLine).join("\n")}
+
+☁️ <b>CLOUD TRIAL &amp; ENTERPRISE ACCOUNTS:</b>
+${cloudProds.map(fmtCatalogLine).join("\n")}
+
+🔑 <b>HIGH-QUOTA OFFICIAL API KEYS:</b>
+${keyProds.map(fmtCatalogLine).join("\n")}
+
+📱 <b>GLOBAL eSIM &amp; VERIFICATION TOOLS:</b>
+${esimProds.map(fmtCatalogLine).join("\n")}
+━━━━━━━━━━━━━━━━━━━━
+🎁 <b>FREE REWARD:</b> Invite 30 Friends = <b>1x FREE ChatGPT Shared (1M)!</b>
+💳 <b>Payment:</b> ${escapeHtml(payMethods)}
+📞 <b>Support:</b> ${escapeHtml(supportHandle)}
+⚡️ <b>24/7 Instant Automated Delivery via Bot:</b>
 👉 ${storeLink}`;
 
     const post2Plain =
-`🚀 FLASH WHOLESALE & RETAIL STOCK (大量现货 • 自动发货) 🚀
+`🔥 FLASH WHOLESALE & RETAIL STOCK (大量现货 • 自动发货) 🔥
 ━━━━━━━━━━━━━━━━━━━━
-${products.map((p) => `✅ ${p.name}: $${Number(p.price).toFixed(2)} (Stock: ${p.stock || 0})`).join("\n")}
+${products.map((p, i) => `${i + 1}. ${p.name} — $${Number(p.price).toFixed(2)} [🟢 ${p.stock || 0} Ready]`).join("\n")}
 ━━━━━━━━━━━━━━━━━━━━
-📦 Bulk 5+ Orders: Automatic Wholesale Discount Applied!
+📦 Automatic Bulk Discounts on 5+ Units at Checkout!
 💰 Accepted: ${payMethods}
+📢 Updates: ${channelLink} | Proofs: ${groupLink}
 🛒 Order Instantly 24/7 in Our Automated Bot:
 👉 ${storeLink}`;
 
+    const post2Html =
+`🔥 <b>FLASH WHOLESALE &amp; RETAIL STOCK (大量现货 • 自动发货)</b> 🔥
+━━━━━━━━━━━━━━━━━━━━
+${products.map((p, i) => `<b>${i + 1}.</b> ${escapeHtml(p.name)} — <b>$${Number(p.price).toFixed(2)}</b> <code>[🟢 ${p.stock || 0} Left]</code>`).join("\n")}
+━━━━━━━━━━━━━━━━━━━━
+📦 <b>Wholesale:</b> Automatic Bulk Discount on 5+ Units!
+💰 <b>Accepted:</b> ${escapeHtml(payMethods)}
+📢 <a href="${channelLink}">Official Channel</a> • <a href="${groupLink}">Live Order Proofs</a>
+🛒 <b>Order Instantly 24/7 in Our Automated Bot:</b>
+👉 ${storeLink}`;
+
+    const post3Plain =
+`⚡️ STOP OVERPAYING FOR AI, CLOUD & API KEYS! ⚡️
+━━━━━━━━━━━━━━━━━━━━
+Why wait hours for manual sellers when you can get instant automated delivery in 2 seconds?
+
+🏆 OUR TOP BESTSELLERS TODAY:
+• Claude Max 20x (Finished Account) — $45.00
+• ChatGPT Pro 20x ($200 Monthly Tier) — $55.00
+• Google Cloud GCP $300 (USA / JSON) — from $15.00
+• Azure PAYG (GPT T1–T5 & Claude T5) — from $45.00
+• AWS 5vCPU (5 RPM & 50 RPM Bedrock) — from $18.00
+• Official Gemini, Claude, OpenAI & Bedrock API Keys — from $12.00
+• Global eSIM & Aged USA Google Voice — from $6.00
+
+🎁 OR Invite 30 Friends to Unlock 1 FREE ChatGPT Shared Account (1M)!
+━━━━━━━━━━━━━━━━━━━━
+💳 Zero-Fee Binance Pay, USDT (TRC20/BEP20/Polygon) & LTC
+👉 Start Shopping Now: ${storeLink}`;
+
+    const post3Html =
+`⚡️ <b>STOP OVERPAYING FOR AI, CLOUD &amp; API KEYS!</b> ⚡️
+━━━━━━━━━━━━━━━━━━━━
+<i>Why wait hours for manual sellers when you can get instant automated delivery in 2 seconds?</i>
+
+🏆 <b>OUR TOP BESTSELLERS TODAY:</b>
+🔥 <b>Claude Max 20x (Finished Account)</b> — <b>$45.00</b>
+🚀 <b>ChatGPT Pro 20x ($200 Monthly Tier)</b> — <b>$55.00</b>
+☁️ <b>Google Cloud GCP $300 (USA / JSON)</b> — <b>from $15.00</b>
+💎 <b>Azure PAYG (GPT T1–T5 &amp; Claude T5)</b> — <b>from $45.00</b>
+📦 <b>AWS 5vCPU (5 RPM &amp; 50 RPM Bedrock)</b> — <b>from $18.00</b>
+🔑 <b>Official Gemini, Claude, OpenAI &amp; AWSB Keys</b> — <b>from $12.00</b>
+📱 <b>Global eSIM &amp; Aged USA Google Voice</b> — <b>from $6.00</b>
+
+🎁 <b>BONUS:</b> Invite 30 Friends = <b>1x FREE ChatGPT Shared (1M)!</b>
+━━━━━━━━━━━━━━━━━━━━
+💳 <b>Payment:</b> ${escapeHtml(payMethods)}
+👉 <b>Start Shopping Now:</b> ${storeLink}`;
+
     return [
       {
-        title: "🌟 All Products — Post #1 (Categorized Full Catalog)",
+        title: "🌟 All Products — Post #1 (Categorized Master Catalog)",
         plainText: post1Plain,
-        htmlText: `<blockquote>${escapeHtml(post1Plain)}</blockquote>`
+        htmlText: `<blockquote>${post1Html}</blockquote>`
       },
       {
-        title: "🌟 All Products — Post #2 (Flash Stock & Wholesale List)",
+        title: "🌟 All Products — Post #2 (Live Inventory & Wholesale Price List)",
         plainText: post2Plain,
-        htmlText: `<blockquote>${escapeHtml(post2Plain)}</blockquote>`
+        htmlText: `<blockquote>${post2Html}</blockquote>`
+      },
+      {
+        title: "🌟 All Products — Post #3 (High-Converting Bestseller Hook)",
+        plainText: post3Plain,
+        htmlText: `<blockquote>${post3Html}</blockquote>`
       }
     ];
   }
 
+  // 2. CATEGORY-SPECIFIC PROMO PACKS (cat_ai_sub, cat_cloud_acc, cat_api_key, cat_esim_tools)
+  if (targetId.startsWith("cat_")) {
+    const catKey = targetId.replace("cat_", "");
+    const meta = PROMO_CATEGORY_META[catKey] || { icon: "📦", label: "Store Category", short: "Category" };
+    const catProds = products.filter((p) => p.category === catKey);
+
+    const catPost1Plain =
+`${meta.icon} ${meta.label.toUpperCase()} — IN STOCK NOW! ${meta.icon}
+━━━━━━━━━━━━━━━━━━━━
+${catProds.map((p) => {
+  const bulk = getUnitPrice(p, 5);
+  const bulkTxt = bulk < p.price ? ` | Bulk 5+: $${bulk.toFixed(2)}` : "";
+  const firstDesc = (p.description || "").split("\n")[0] || "";
+  return `🔥 ${p.name}\n   💵 Price: $${Number(p.price).toFixed(2)} USDT${bulkTxt} (Stock: ${p.stock || 0})\n   ${firstDesc}`;
+}).join("\n\n")}
+━━━━━━━━━━━━━━━━━━━━
+💳 Payment: ${payMethods}
+📞 Admin Support: ${supportHandle}
+⚡️ 24/7 Instant Automated Delivery via Bot:
+👉 ${storeLink}`;
+
+    const catPost1Html =
+`${meta.icon} <b>${escapeHtml(meta.label.toUpperCase())} — IN STOCK NOW!</b> ${meta.icon}
+━━━━━━━━━━━━━━━━━━━━
+${catProds.map((p) => {
+  const bulk = getUnitPrice(p, 5);
+  const bulkTxt = bulk < p.price ? ` • <i>Bulk 5+: $${bulk.toFixed(2)}</i>` : "";
+  const firstDesc = escapeHtml((p.description || "").split("\n")[0] || "");
+  return `🔥 <b>${escapeHtml(p.name)}</b>\n   💵 <b>$${Number(p.price).toFixed(2)} USDT</b>${bulkTxt} <code>[${p.stock || 0} Ready]</code>\n   <i>${firstDesc}</i>`;
+}).join("\n\n")}
+━━━━━━━━━━━━━━━━━━━━
+💳 <b>Payment:</b> ${escapeHtml(payMethods)}
+📞 <b>Support:</b> ${escapeHtml(supportHandle)}
+⚡️ <b>24/7 Instant Automated Delivery via Bot:</b>
+👉 ${storeLink}`;
+
+    const catPost2Plain =
+`🚀 WHOLESALE & RETAIL RESTOCK: ${meta.label.toUpperCase()} 🚀
+━━━━━━━━━━━━━━━━━━━━
+${catProds.map(fmtPlainLine).join("\n")}
+━━━━━━━━━━━━━━━━━━━━
+✅ 100% Verified Active Credentials & Keys
+✅ Automatic Volume Discounts on 5+ Units
+✅ Instant Automated Dispatch 24/7
+👉 Order Now: ${storeLink}`;
+
+    const catPost2Html =
+`🚀 <b>WHOLESALE &amp; RETAIL RESTOCK: ${escapeHtml(meta.label.toUpperCase())}</b> 🚀
+━━━━━━━━━━━━━━━━━━━━
+${catProds.map(fmtCatalogLine).join("\n")}
+━━━━━━━━━━━━━━━━━━━━
+✅ <b>100% Verified Active Credentials &amp; Keys</b>
+✅ <b>Automatic Volume Discounts on 5+ Units</b>
+✅ <b>Instant Automated Dispatch 24/7</b>
+👉 <b>Order Now:</b> ${storeLink}`;
+
+    return [
+      {
+        title: `${meta.icon} ${meta.short} — Post #1 (Detailed Category Showcase)`,
+        plainText: catPost1Plain,
+        htmlText: `<blockquote>${catPost1Html}</blockquote>`
+      },
+      {
+        title: `${meta.icon} ${meta.short} — Post #2 (Clean Price & Wholesale List)`,
+        plainText: catPost2Plain,
+        htmlText: `<blockquote>${catPost2Html}</blockquote>`
+      }
+    ];
+  }
+
+  // 3. INDIVIDUAL PRODUCT MARKETING ADS (3 VARIATIONS FOR EVERY PRODUCT)
   const p = getProduct(targetId) || products[0];
   const unitPrice = Number(p.price || 15);
   const bulkPrice = getUnitPrice(p, 5);
   const hasBulk = bulkPrice < unitPrice;
+  const savingsPer5 = hasBulk ? Number(((unitPrice - bulkPrice) * 5).toFixed(2)) : 0;
   const stockCount = Number(p.stock || 0);
+  const hook = PRODUCT_MARKETING_HOOKS[p.id] || {
+    badge: "🔥 VERIFIED PREMIUM STOCK",
+    headline: p.name.toUpperCase(),
+    subhook: "100% Official, tested and ready for instant automated delivery!",
+    useCases: "Developers, agencies, power users & cloud engineers."
+  };
 
   const post1Plain =
-`🔥 ${p.name.toUpperCase()} — IN STOCK NOW! 🔥
+`${hook.badge}
+🔥 ${hook.headline} 🔥
 ━━━━━━━━━━━━━━━━━━━━
-💵 Retail Price: $${unitPrice.toFixed(2)} USDT${hasBulk ? `\n📦 Bulk Price (5+ Units): $${bulkPrice.toFixed(2)} USDT / each` : ""}
-📊 Live Stock Available: ${stockCount} Units Ready 🟢
+💡 ${hook.subhook}
+
+💵 Retail Price: $${unitPrice.toFixed(2)} USDT${hasBulk ? `\n📦 Wholesale (5+ Units): $${bulkPrice.toFixed(2)} USDT / each (Save $${savingsPer5.toFixed(2)} on 5x!)` : ""}
+📊 Live Inventory: ${stockCount} Verified Units Ready 🟢
 ━━━━━━━━━━━━━━━━━━━━
-📝 Product Highlights:
+✨ KEY FEATURES & SPECS:
 ${p.description}
 
-🛡️ Guarantee & Terms:
+🎯 IDEAL FOR:
+• ${hook.useCases}
+
+🛡️ WARRANTY & TERMS:
 ${p.terms}
 ━━━━━━━━━━━━━━━━━━━━
-💳 Accepted Payments: ${payMethods}
-⚡️ 24/7 Instant Automated Delivery via Bot:
+💳 Accepted: ${payMethods}
+📞 24/7 Support: ${supportHandle}
+⚡️ 2-Second Automated Delivery in Bot:
+👉 ${storeLink}`;
+
+  const post1Html =
+`<b>${escapeHtml(hook.badge)}</b>
+🔥 <b>${escapeHtml(hook.headline)}</b> 🔥
+━━━━━━━━━━━━━━━━━━━━
+💡 <i>${escapeHtml(hook.subhook)}</i>
+
+💵 <b>Retail Price:</b> <b>$${unitPrice.toFixed(2)} USDT</b>${hasBulk ? `\n📦 <b>Wholesale (5+ Units):</b> <b>$${bulkPrice.toFixed(2)} USDT / each</b> <i>(Save $${savingsPer5.toFixed(2)} on 5x!)</i>` : ""}
+📊 <b>Live Inventory:</b> <b>${stockCount} Verified Units Ready 🟢</b>
+━━━━━━━━━━━━━━━━━━━━
+✨ <b>KEY FEATURES &amp; SPECS:</b>
+${escapeHtml(p.description)}
+
+🎯 <b>IDEAL FOR:</b>
+• ${escapeHtml(hook.useCases)}
+
+🛡️ <b>WARRANTY &amp; TERMS:</b>
+<i>${escapeHtml(p.terms)}</i>
+━━━━━━━━━━━━━━━━━━━━
+💳 <b>Accepted:</b> ${escapeHtml(payMethods)}
+📞 <b>Support:</b> ${escapeHtml(supportHandle)}
+⚡️ <b>2-Second Automated Delivery in Bot:</b>
 👉 ${storeLink}`;
 
   const post2Plain =
-`⚡️ FLASH DEAL & RESTOCK: ${p.name} ⚡️
+`⚡️ FLASH RESTOCK ALERT: ${p.name.toUpperCase()} ⚡️
 ━━━━━━━━━━━━━━━━━━━━
-✅ Verified & Ready for Immediate Dispatch!
-💰 Single Unit: $${unitPrice.toFixed(2)} USDT${hasBulk ? ` | Bulk (5+): $${bulkPrice.toFixed(2)} USDT` : ""}
-📦 Current Inventory: ${stockCount} Fresh Units
+Fresh verified batch just loaded into our automated dispensary!
+
+📦 Product: ${p.name}
+💰 Single Unit: $${unitPrice.toFixed(2)} USDT${hasBulk ? `\n🔥 Bulk 5+ Rate: $${bulkPrice.toFixed(2)} USDT / each` : ""}
+🟢 Available Stock: ${stockCount} Units
 
 ${p.description}
 
+✅ Instant Automated Delivery (No waiting for manual sellers!)
 💳 Pay via ${payMethods}
-🛒 Grab yours now before stock runs out:
+🛒 Grab yours now before this batch sells out:
 👉 ${storeLink}`;
+
+  const post2Html =
+`⚡️ <b>FLASH RESTOCK ALERT: ${escapeHtml(p.name.toUpperCase())}</b> ⚡️
+━━━━━━━━━━━━━━━━━━━━
+<i>Fresh verified batch just loaded into our automated dispensary!</i>
+
+📦 <b>Product:</b> <b>${escapeHtml(p.name)}</b>
+💰 <b>Single Unit:</b> <b>$${unitPrice.toFixed(2)} USDT</b>${hasBulk ? `\n🔥 <b>Bulk 5+ Rate:</b> <b>$${bulkPrice.toFixed(2)} USDT / each</b>` : ""}
+🟢 <b>Available Stock:</b> <b>${stockCount} Units</b>
+
+${escapeHtml(p.description)}
+
+✅ <b>Instant Automated Delivery</b> <i>(Zero waiting!)</i>
+💳 <b>Pay via:</b> ${escapeHtml(payMethods)}
+🛒 <b>Grab yours now before this batch sells out:</b>
+👉 ${storeLink}`;
+
+  const post3Plain =
+`💎 SHORT & PUNCHY AD: ${p.name}
+━━━━━━━━━━━━━━━━━━━━
+🚀 Need ${p.name}? We have ${stockCount} fresh units in stock right now!
+• Price: $${unitPrice.toFixed(2)} USDT${hasBulk ? ` (Bulk 5+: $${bulkPrice.toFixed(2)})` : ""}
+• Use Case: ${hook.useCases}
+• Delivery: 100% Automated 24/7 via Telegram Bot
+👉 Order in 1 Click: ${storeLink}`;
+
+  const post3Html =
+`💎 <b>READY STOCK: ${escapeHtml(p.name)}</b>
+━━━━━━━━━━━━━━━━━━━━
+🚀 <i>${escapeHtml(hook.subhook)}</i>
+
+• 💵 <b>Price:</b> <b>$${unitPrice.toFixed(2)} USDT</b>${hasBulk ? ` <i>(Bulk 5+: $${bulkPrice.toFixed(2)})</i>` : ""}
+• 📊 <b>Stock:</b> <b>${stockCount} Units Available 🟢</b>
+• 🎯 <b>Best For:</b> ${escapeHtml(hook.useCases)}
+• ⚡️ <b>Delivery:</b> Instant 24/7 Automated Bot
+
+👉 <b>Order in 1 Click:</b> ${storeLink}`;
 
   return [
     {
-      title: `📦 ${p.name} — Post #1 (Detailed Feature Promo)`,
+      title: `📦 ${p.name} — Post #1 (Full High-Converting Spotlight)`,
       plainText: post1Plain,
-      htmlText: `<blockquote>${escapeHtml(post1Plain)}</blockquote>`
+      htmlText: `<blockquote>${post1Html}</blockquote>`
     },
     {
-      title: `📦 ${p.name} — Post #2 (Flash Restock & Deal Promo)`,
+      title: `📦 ${p.name} — Post #2 (Flash Restock & Wholesale Alert)`,
       plainText: post2Plain,
-      htmlText: `<blockquote>${escapeHtml(post2Plain)}</blockquote>`
+      htmlText: `<blockquote>${post2Html}</blockquote>`
+    },
+    {
+      title: `📦 ${p.name} — Post #3 (Short Punchy Social Ad)`,
+      plainText: post3Plain,
+      htmlText: `<blockquote>${post3Html}</blockquote>`
     }
   ];
 }
@@ -1016,33 +1477,49 @@ async function showPromoTemplateView(bot, ctx, targetId = "all", postNumber = 1)
   const settings = getAllSettings();
 
   const templates = buildPromoTemplates(targetId, storeLink, settings);
-  const idx = postNumber === 2 ? 1 : 0;
+  const maxPosts = templates.length;
+  const idx = Math.min(Math.max(0, postNumber - 1), maxPosts - 1);
   const currentTpl = templates[idx];
 
   const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(storeLink)}&text=${encodeURIComponent(currentTpl.plainText.replace(storeLink, "").trim())}`;
 
   const text =
-    `🚀 <b>READY PROMO POST (${idx + 1}/2)</b>\n` +
+    `🚀 <b>ADMIN PROMO STUDIO (${idx + 1} / ${maxPosts})</b>\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
     `📌 <b>${escapeHtml(currentTpl.title)}</b>\n\n` +
-    `👇 <b>Tap inside the box below to copy the full post:</b>\n\n` +
+    `👇 <b>Tap inside the code box below to 1-tap copy the full text:</b>\n\n` +
     `<pre><code>${escapeHtml(currentTpl.plainText)}</code></pre>\n\n` +
-    `💡 <i>Use the buttons below to switch between Post #1 &amp; Post #2, or publish directly to your Group/Channel with 1 click:</i>`;
+    `💡 <i>Switch styles or publish directly to your Group, Channel, or All Bot Users with 1 click:</i>`;
+
+  const tabRow = templates.map((_, i) =>
+    Markup.button.callback(
+      idx === i ? `🔘 Style #${i + 1}` : `⚪️ Style #${i + 1}`,
+      `adm_promo_view:${targetId}:${i + 1}`
+    )
+  );
+
+  const productObj = !targetId.startsWith("cat_") && targetId !== "all" ? getProduct(targetId) : null;
+  const backCallback = productObj
+    ? `adm_promo_cat:${productObj.category}`
+    : targetId.startsWith("cat_")
+    ? `adm_promo_cat:${targetId.replace("cat_", "")}`
+    : "adm:promos";
 
   const kb = Markup.inlineKeyboard([
+    tabRow,
     [
-      Markup.button.callback(idx === 0 ? "🔘 Post #1 (Selected)" : "⚪️ View Post #1", `adm_promo_view:${targetId}:1`),
-      Markup.button.callback(idx === 1 ? "🔘 Post #2 (Selected)" : "⚪️ View Post #2", `adm_promo_view:${targetId}:2`)
+      Markup.button.callback("📤 Post to Group", `adm_promo_send:grp:${targetId}:${idx + 1}`),
+      Markup.button.callback("📢 Post to Channel", `adm_promo_send:chn:${targetId}:${idx + 1}`)
     ],
     [
-      Markup.button.callback("📤 Post to Group Now", `adm_promo_send:grp:${targetId}:${idx + 1}`),
-      Markup.button.callback("📢 Post to Channel Now", `adm_promo_send:chn:${targetId}:${idx + 1}`)
+      Markup.button.callback("📣 Broadcast to All Users", `adm_promo_send:all_users:${targetId}:${idx + 1}`),
+      Markup.button.callback("📋 Preview Formatted Ad", `adm_promo_copy:${targetId}:${idx + 1}`)
     ],
     [
-      Markup.button.url("🚀 Share to Any Telegram Chat", shareUrl)
+      Markup.button.url("🚀 Forward / Share to Any Chat", shareUrl)
     ],
     [
-      Markup.button.callback("🔙 Back to Promo List", "adm:promos"),
+      Markup.button.callback("🔙 Back to Promo Catalog", backCallback),
       Markup.button.callback("👑 Admin Dashboard", "adm:menu")
     ]
   ]);
@@ -1065,68 +1542,14 @@ async function handleAdminTextInput(bot, ctx, text) {
   ctx.session.adminAction = null;
 
   if (action.type === "set_setting") {
-    let cleanVal = text.trim();
-    let customLabel = null;
-
-    if (action.key === "group_link" || action.key === "channel_link") {
-      // Support [Label](https://t.me/...) format
-      const mdMatch = cleanVal.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
-      // Support <a href="https://t.me/...">Label</a> format
-      const htmlMatch = cleanVal.match(/^<a\s+href=["']([^"']+)["'][^>]*>([\s\S]+?)<\/a>$/i);
-      // Support "Label | https://t.me/..." format
-      const pipeParts = cleanVal.includes("|") ? cleanVal.split("|").map((s) => s.trim()) : null;
-
-      if (mdMatch) {
-        customLabel = mdMatch[1].trim();
-        cleanVal = mdMatch[2].trim();
-      } else if (htmlMatch) {
-        cleanVal = htmlMatch[1].trim();
-        customLabel = htmlMatch[2].trim();
-      } else if (pipeParts && pipeParts.length >= 2 && pipeParts[0] && pipeParts[1]) {
-        customLabel = pipeParts[0];
-        cleanVal = pipeParts.slice(1).join("|").trim();
-      }
-
-      if (cleanVal.startsWith("@")) {
-        cleanVal = `https://t.me/${cleanVal.slice(1)}`;
-      } else if (/^[a-zA-Z0-9_]{4,64}$/.test(cleanVal)) {
-        cleanVal = `https://t.me/${cleanVal}`;
-      }
-
-      if (customLabel) {
-        setSetting(action.key === "group_link" ? "group_link_text" : "channel_link_text", customLabel);
-      }
-
-      const handle = extractTelegramUsername(cleanVal);
-      if (handle) {
-        setSetting(action.key === "group_link" ? "group_id" : "channel_id", handle);
-      }
-    } else if (action.key === "group_id" || action.key === "channel_id") {
-      const handle = extractTelegramUsername(cleanVal);
-      if (handle) {
-        cleanVal = handle;
-      }
-    }
-
+    const cleanVal = text.trim();
     setSetting(action.key, cleanVal);
-    const displayLabel =
-      customLabel ||
-      (action.key === "group_link"
-        ? getSetting("group_link_text") || "Join Community Group"
-        : action.key === "channel_link"
-        ? getSetting("channel_link_text") || "Join Official Channel"
-        : null);
-
     await ctx.reply(
       `✅ <b>Setting Updated!</b>\n` +
       `⚙️ <b>Field:</b> <code>${action.key}</code>\n` +
-      (displayLabel && (action.key === "group_link" || action.key === "channel_link")
-        ? `🔗 <b>Hyperlink Preview:</b> <a href="${escapeHtml(String(cleanVal))}">${escapeHtml(displayLabel)}</a>\n`
-        : `📝 <b>New Value:</b> <b>${escapeHtml(String(cleanVal))}</b>\n`),
+      `📝 <b>New Value:</b> <b>${escapeHtml(String(cleanVal))}</b>`,
       {
         parse_mode: "HTML",
-        disable_web_page_preview: true,
-        link_preview_options: { is_disabled: true },
         ...Markup.inlineKeyboard([[Markup.button.callback("⚙️ Back to Settings", "adm:settings")]])
       }
     );
