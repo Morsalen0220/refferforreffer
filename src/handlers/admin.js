@@ -517,8 +517,8 @@ function registerAdminHandlers(bot) {
       `🟢 <b>BEP20 USDT Address:</b> <code>${s.bep20_usdt_address?.slice(0, 12)}...</code>\n` +
       `🟣 <b>Polygon USDT Address:</b> <code>${s.polygon_usdt_address?.slice(0, 12)}...</code>\n` +
       `⚪️ <b>Litecoin (LTC) Address:</b> <code>${(s.ltc_address || "ltc1q...").slice(0, 14)}...</code>\n` +
-      `📢 <b>Channel:</b> ${s.channel_link}\n` +
-      `👥 <b>Group:</b> ${s.group_link}\n` +
+      `📢 <b>Channel:</b> <a href="${s.channel_link}">Open Channel</a>\n` +
+      `👥 <b>Group:</b> <a href="${s.group_link}">Open Community Group</a>\n` +
       `📞 <b>Support Admin:</b> ${escapeHtml(s.support_username || "@Morsalen0220")}\n` +
       `🔒 <b>Force Join:</b> ${s.force_join_enabled ? "✅ ON" : "❌ OFF"}\n` +
       `📢 <b>Group Auto-Poster:</b> ${s.auto_broadcast_enabled !== false ? "✅ ON" : "❌ OFF"}\n` +
@@ -1197,7 +1197,7 @@ ${products.map((p, i) => `${i + 1}. ${p.name} — $${Number(p.price).toFixed(2)}
 ━━━━━━━━━━━━━━━━━━━━
 📦 Automatic Bulk Discounts on 5+ Units at Checkout!
 💰 Accepted: ${payMethods}
-📢 Updates: ${channelLink} | Proofs: ${groupLink}
+📢 Join our Official Channel & Community Group (links inside the bot)
 🛒 Order Instantly 24/7 in Our Automated Bot:
 👉 ${storeLink}`;
 

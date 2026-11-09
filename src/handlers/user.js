@@ -568,7 +568,7 @@ function registerUserHandlers(bot) {
         {
           parse_mode: "HTML",
           ...Markup.inlineKeyboard([
-            [Markup.button.callback("🎁 Open Free ChatGPT Referral Center", "menu_refer")]
+            [Markup.button.callback("🎁 Open Referral Center", "menu_refer")]
           ])
         }
       ).catch(() => {});
@@ -578,8 +578,8 @@ function registerUserHandlers(bot) {
     if (!joined) {
       return ctx.reply(
         `⚠️ <b>Welcome!</b> To access the store, please join our official Channel and Group first:\n\n` +
-        `📢 <b>Channel:</b> ${settings.channel_link}\n` +
-        `👥 <b>Group:</b> ${settings.group_link}\n\n` +
+        `📢 <b><a href="${settings.channel_link}">Join Our Channel</a></b>\n` +
+        `👥 <b><a href="${settings.group_link}">Join Our Community Group</a></b>\n\n` +
         `👇 <i>After joining both, tap "Check / I Have Joined" below:</i>`,
         {
           parse_mode: "HTML",
@@ -598,9 +598,9 @@ function registerUserHandlers(bot) {
     await ctx.reply(
       `👥 <b>JOIN OUR OFFICIAL COMMUNITY GROUP!</b>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
-      `🔥 Check live buyer order proofs, daily restock alerts, and flash wholesale deals in our community group:\n\n` +
-      `👉 <b>Group:</b> ${groupLink}\n` +
-      `📢 <b>Channel:</b> ${channelLink}`,
+      `🔥 Check live buyer order proofs, daily restock alerts, and flash wholesale deals in our community:\n\n` +
+      `👉 <b><a href="${groupLink}">Our Community Group</a></b>\n` +
+      `📢 <b><a href="${channelLink}">Our Official Channel</a></b>`,
       {
         parse_mode: "HTML",
         disable_web_page_preview: true,
@@ -609,10 +609,7 @@ function registerUserHandlers(bot) {
             Markup.button.url("👥 Join Our Community Group", groupLink),
             Markup.button.url("📢 Official Channel", channelLink)
           ],
-          [
-            Markup.button.callback("🛍️ Browse Store", "menu_store"),
-            Markup.button.callback("🎁 Refer & Earn", "menu_refer")
-          ]
+          [Markup.button.callback("🛍️ Browse Store", "menu_store")]
         ])
       }
     );
@@ -675,8 +672,8 @@ function registerUserHandlers(bot) {
           }
           return ctx.reply(
             `⚠️ <b>Access Denied!</b>\nYou must join our Channel and Group before using the store.\n\n` +
-            `📢 <b>Channel:</b> ${settings.channel_link}\n` +
-            `👥 <b>Group:</b> ${settings.group_link}\n\n` +
+            `📢 <b><a href="${settings.channel_link}">Join Our Channel</a></b>\n` +
+            `👥 <b><a href="${settings.group_link}">Join Our Community Group</a></b>\n\n` +
             `👇 <i>Tap below after joining:</i>`,
             {
               parse_mode: "HTML",
@@ -704,6 +701,7 @@ function registerUserHandlers(bot) {
   // 30-Referral Free ChatGPT Shared Account (1 Month)
   bot.hears("🎁 Free ChatGPT (30 Refs)", (ctx) => showReferralScreen(bot, ctx));
   bot.hears("🎁 Refer & Earn", (ctx) => showReferralScreen(bot, ctx));
+  bot.hears("🎁 Refer", (ctx) => showReferralScreen(bot, ctx));
   bot.command("refer", (ctx) => showReferralScreen(bot, ctx));
   bot.action("menu_refer", async (ctx) => {
     await ctx.answerCbQuery();
@@ -1122,8 +1120,8 @@ function registerUserHandlers(bot) {
       `• <b>Google Cloud $300:</b> USA Region &amp; JSON Service Key Format\n` +
       `• <b>Azure &amp; AWS:</b> PAYG GPT T1–T5, Claude T5, AWS 5v 50RPM\n` +
       `• <b>Official API Keys:</b> Vertex Gemini, Claude, Bedrock, OpenAI, Azure\n\n` +
-      `👥 <b>Live Proofs Group:</b> ${settings.group_link || "https://t.me/"}\n` +
-      `📢 <b>Official Channel:</b> ${settings.channel_link || "https://t.me/"}\n` +
+      `👥 <b><a href="${settings.group_link || "https://t.me/"}">Live Proofs Community Group</a></b>\n` +
+      `📢 <b><a href="${settings.channel_link || "https://t.me/"}">Official Channel</a></b>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `👇 <i>Tap below to view real-time buyer proofs in our group:</i>`;
 
@@ -1187,8 +1185,8 @@ function registerUserHandlers(bot) {
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `Need help with an order, bulk stock inquiry, or wallet deposit?\n\n` +
       `👤 <b>Direct Admin:</b> @${cleanSupport}\n` +
-      `👥 <b>Community Group:</b> ${settings.group_link || "https://t.me/"}\n` +
-      `📢 <b>Official Channel:</b> ${settings.channel_link || "https://t.me/"}\n` +
+      `👥 <b><a href="${settings.group_link || "https://t.me/"}">Our Community Group</a></b>\n` +
+      `📢 <b><a href="${settings.channel_link || "https://t.me/"}">Our Official Channel</a></b>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `👇 <i>Choose an option below to reach us:</i>`;
 

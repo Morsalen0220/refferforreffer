@@ -96,7 +96,7 @@ async function startApp() {
       await bot.telegram.setMyCommands([
         { command: "start", description: "🚀 Open Store Main Menu" },
         { command: "buy", description: "🛍️ Browse AI & Cloud Categories" },
-        { command: "refer", description: "🎁 Refer & Earn Rewards" },
+        { command: "refer", description: "🎁 Refer" },
         { command: "apikey", description: "🔑 High-Quota Official API Keys" },
         { command: "cloud", description: "☁️ GCP $300 / Azure PAYG / AWS 5v" },
         { command: "wallet", description: "👛 View Wallet & Deposit USDT/LTC" },

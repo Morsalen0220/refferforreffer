@@ -115,7 +115,7 @@ function makeProgressBar(current, target) {
 function getMainMenuReplyKeyboard() {
   return Markup.keyboard([
     ["🛍️ Buy Products", "🔑 API Keys & Cloud"],
-    ["🎁 Refer & Earn", "👛 Wallet"],
+    ["🎁 Refer", "👛 Wallet"],
     ["📦 My Orders", "📊 Live Proofs", "📞 Support"]
   ]).resize();
 }
@@ -135,8 +135,8 @@ function welcomeText(user) {
     `📱 <b>Global eSIM &amp; GV:</b> All-Country eSIM Cards &amp; USA Google Voice Accounts\n` +
     `⚡️ <b>24/7 Automated Delivery:</b> USDT (TRC-20, BEP-20 &amp; Polygon), Litecoin (LTC)${settings.binance_pay_enabled !== false ? " &amp; Binance Pay" : ""} Supported\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
-    `👥 <b>Our Community Group:</b> <a href="${groupLink}">${groupLink}</a>\n` +
-    `📢 <b>Official Channel:</b> <a href="${channelLink}">${channelLink}</a>\n` +
+    `👥 <b><a href="${groupLink}">Join Our Community Group</a></b>\n` +
+    `📢 <b><a href="${channelLink}">Join Our Official Channel</a></b>\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
     `👛 <b>Your Wallet Balance:</b> <b>${money(user.wallet_balance || 0)}</b>\n` +
     `👇 <i>Choose an option from the menu below to browse &amp; order:</i>`
